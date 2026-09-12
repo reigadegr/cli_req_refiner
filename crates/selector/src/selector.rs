@@ -27,8 +27,6 @@ pub struct UpstreamSelector {
     global_user_agents: GlobalUserAgentConfig,
     /// 强制轮询的 upstream 下标列表；非空时忽略 `enable` 字段
     force_upstream_index: Vec<usize>,
-    /// 强制只使用 model 匹配此列表的 upstream；空列表时不生效
-    force_model: Vec<String>,
     /// `anthropic` 模式独立轮询计数
     next_index_anthropic: AtomicUsize,
     /// `openai_responses` 模式独立轮询计数
@@ -48,7 +46,6 @@ impl UpstreamSelector {
                 codex: None,
             },
             vec![],
-            vec![],
             upstreams,
         )
     }
@@ -57,7 +54,6 @@ impl UpstreamSelector {
     pub fn new_with_global_user_agents(
         global_user_agents: GlobalUserAgentConfig,
         force_upstream_index: Vec<usize>,
-        force_model: Vec<String>,
         upstreams: Vec<UpstreamConfig>,
     ) -> Option<Self> {
         if upstreams.is_empty() {
@@ -67,7 +63,6 @@ impl UpstreamSelector {
             upstreams,
             global_user_agents,
             force_upstream_index,
-            force_model,
             next_index_anthropic: AtomicUsize::new(0),
             next_index_openai_responses: AtomicUsize::new(0),
             next_index_openai_chat: AtomicUsize::new(0),
@@ -107,7 +102,6 @@ impl UpstreamSelector {
             let index = *self.force_upstream_index.get(pos)?;
             if let Some(upstream) = self.upstreams.get(index)
                 && upstream.mode.supports(expected_mode)
-                && self.model_matches(upstream)
             {
                 // 如果指定了 request_model，则必须匹配
                 if let Some(req_model) = request_model
@@ -121,20 +115,10 @@ impl UpstreamSelector {
         None
     }
 
-    /// 检查 upstream 的 model 是否匹配 `force_model` 列表
-    /// 空列表时视为全部匹配
+    /// 检查 upstream 是否匹配指定的 mode
     #[must_use]
-    fn model_matches(&self, upstream: &UpstreamConfig) -> bool {
-        if self.force_model.is_empty() {
-            return true;
-        }
-        self.force_model.contains(&upstream.model)
-    }
-
-    /// 检查 upstream 是否匹配指定的 mode 和 `force_model` 过滤
-    #[must_use]
-    fn matches_mode_and_model(&self, upstream: &UpstreamConfig, expected_mode: Mode) -> bool {
-        upstream.mode.supports(expected_mode) && self.model_matches(upstream)
+    fn matches_mode(upstream: &UpstreamConfig, expected_mode: Mode) -> bool {
+        upstream.mode.supports(expected_mode)
     }
 
     /// 获取指定 mode 当前可用的 upstream 数量
@@ -155,7 +139,7 @@ impl UpstreamSelector {
                 .iter()
                 .filter(|&&idx| {
                     self.upstreams.get(idx).is_some_and(|u| {
-                        self.matches_mode_and_model(u, expected_mode)
+                        Self::matches_mode(u, expected_mode)
                             && request_model.is_none_or(|req_model| u.model == req_model)
                     })
                 })
@@ -166,7 +150,7 @@ impl UpstreamSelector {
             .iter()
             .filter(|upstream| {
                 upstream.enable
-                    && self.matches_mode_and_model(upstream, expected_mode)
+                    && Self::matches_mode(upstream, expected_mode)
                     && request_model.is_none_or(|req_model| upstream.model == req_model)
             })
             .count()
@@ -239,7 +223,7 @@ impl UpstreamSelector {
         let mut seen = 0;
         let (upstream_idx, upstream) =
             self.upstreams.iter().enumerate().find(|(_, upstream)| {
-                if !upstream.enable || !self.matches_mode_and_model(upstream, expected_mode) {
+                if !upstream.enable || !Self::matches_mode(upstream, expected_mode) {
                     return false;
                 }
 
@@ -591,7 +575,6 @@ mod tests {
         let selector = UpstreamSelector::new_with_global_user_agents(
             GlobalUserAgentConfig::default(),
             vec![1],
-            vec![],
             upstreams,
         )
         .expect("测试数据已确保 upstreams 非空");
@@ -644,7 +627,6 @@ mod tests {
         let selector = UpstreamSelector::new_with_global_user_agents(
             GlobalUserAgentConfig::default(),
             vec![1],
-            vec![],
             upstreams,
         )
         .expect("测试数据已确保 upstreams 非空");
@@ -659,7 +641,6 @@ mod tests {
         let selector = UpstreamSelector::new_with_global_user_agents(
             GlobalUserAgentConfig::default(),
             vec![5],
-            vec![],
             create_test_upstreams(),
         )
         .expect("测试数据已确保 upstreams 非空");
@@ -695,7 +676,6 @@ mod tests {
         let selector = UpstreamSelector::new_with_global_user_agents(
             GlobalUserAgentConfig::default(),
             vec![0, 1],
-            vec![],
             upstreams,
         )
         .expect("测试数据已确保 upstreams 非空");
@@ -791,7 +771,6 @@ mod tests {
                     claude: case.global_claude.map(str::to_owned),
                     codex: case.global_codex.map(str::to_owned),
                 },
-                vec![],
                 vec![],
                 vec![UpstreamConfig {
                     enable: true,

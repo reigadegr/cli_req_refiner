@@ -20,9 +20,6 @@ pub struct ServerConfig {
     /// 强制轮询的 upstream 下标列表；非空时忽略 `enable` 字段，仅在列表内轮询
     #[serde(default)]
     pub force_upstream_index: Vec<usize>,
-    /// 强制只使用 model 匹配此列表的 upstream；空列表时不生效
-    #[serde(default)]
-    pub force_model: Vec<String>,
     /// 是否打印请求体
     #[serde(default)]
     pub log_req_body: bool,
@@ -42,7 +39,6 @@ impl Default for ServerConfig {
         Self {
             port: default_port(),
             force_upstream_index: vec![],
-            force_model: vec![],
             log_req_body: false,
             log_res_body: false,
             user_agent_global_claude: None,
@@ -113,8 +109,6 @@ struct PartialServerConfig {
     #[serde(default)]
     force_upstream_index: Option<Vec<usize>>,
     #[serde(default)]
-    force_model: Option<Vec<String>>,
-    #[serde(default)]
     log_req_body: Option<bool>,
     #[serde(default)]
     log_res_body: Option<bool>,
@@ -134,10 +128,6 @@ impl PartialServerConfig {
                 .force_upstream_index
                 .or(legacy.force_upstream_index)
                 .unwrap_or(defaults.force_upstream_index),
-            force_model: self
-                .force_model
-                .or(legacy.force_model)
-                .unwrap_or(defaults.force_model),
             log_req_body: self
                 .log_req_body
                 .or(legacy.log_req_body)
@@ -471,7 +461,6 @@ mod tests {
             ServerConfig {
                 port: 19077,
                 force_upstream_index: vec![],
-                force_model: vec![],
                 log_req_body: true,
                 log_res_body: true,
                 user_agent_global_claude: Some("Claude-Global/9.9.9".to_string()),
