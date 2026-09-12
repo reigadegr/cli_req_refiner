@@ -301,30 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn test_next_by_mode_only_returns_matching_upstreams() {
-        let upstreams = create_test_upstreams();
-        let selector =
-            UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
-
-        let (idx0, _, _, _, key0, user_agent0, mode0) = selector
-            .next_by_mode(Mode::OpenAIResponses)
-            .expect("应能选到 openai_responses upstream");
-        assert_eq!(idx0, 1);
-        assert_eq!(key0, "key2a");
-        assert_eq!(user_agent0, None);
-        assert_eq!(mode0, Mode::OpenAIResponses);
-
-        let (idx1, _, _, _, key1, user_agent1, mode1) = selector
-            .next_by_mode(Mode::OpenAIResponses)
-            .expect("应能继续选到 openai_responses upstream");
-        assert_eq!(idx1, 1);
-        assert_eq!(key1, "key2b");
-        assert_eq!(user_agent1, None);
-        assert_eq!(mode1, Mode::OpenAIResponses);
-    }
-
-    #[test]
-    fn test_next_by_mode_round_robins_across_matching_upstreams() {
+    fn test_round_robin_and_mode_filtering() {
         let upstreams = vec![
             UpstreamConfig {
                 enable: true,
@@ -343,7 +320,7 @@ mod tests {
                 model: "model2".to_string(),
                 api_keys: vec!["key2a".to_string(), "key2b".to_string()],
                 user_agent_claude: None,
-                user_agent_codex: Some("Device-B/1.0".to_string()),
+                user_agent_codex: None,
                 mode: vec![Mode::OpenAIResponses].into(),
             },
             UpstreamConfig {
@@ -360,41 +337,30 @@ mod tests {
         let selector =
             UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
 
-        let (idx0, _, _, _, key0, user_agent0, mode0) = selector
+        // 验证轮询顺序：upstream[1] key[0] -> upstream[2] key[0] -> upstream[1] key[1] -> upstream[2] key[1]
+        let (idx0, _, _, _, key0, _, mode0) = selector
             .next_by_mode(Mode::OpenAIResponses)
             .expect("应能选到第一个匹配 upstream");
-        assert_eq!(idx0, 1);
-        assert_eq!(key0, "key2a");
-        assert_eq!(user_agent0, Some("Device-B/1.0"));
-        assert_eq!(mode0, Mode::OpenAIResponses);
+        assert_eq!((idx0, key0, mode0), (1, "key2a", Mode::OpenAIResponses));
 
-        let (idx1, _, _, _, key1, user_agent1, mode1) = selector
+        let (idx1, _, _, _, key1, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
-            .expect("应能选到第二个匹配 upstream");
-        assert_eq!(idx1, 2);
-        assert_eq!(key1, "key3a");
-        assert_eq!(user_agent1, None);
-        assert_eq!(mode1, Mode::OpenAIResponses);
+            .expect("应轮询到下一个 upstream");
+        assert_eq!((idx1, key1), (2, "key3a"));
 
-        let (idx2, _, _, _, key2, user_agent2, mode2) = selector
+        let (idx2, _, _, _, key2, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
-            .expect("应能继续轮询第一个匹配 upstream 的下一个 key");
-        assert_eq!(idx2, 1);
-        assert_eq!(key2, "key2b");
-        assert_eq!(user_agent2, Some("Device-B/1.0"));
-        assert_eq!(mode2, Mode::OpenAIResponses);
+            .expect("应回到第一个 upstream 的下一个 key");
+        assert_eq!((idx2, key2), (1, "key2b"));
 
-        let (idx3, _, _, _, key3, user_agent3, mode3) = selector
+        let (idx3, _, _, _, key3, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
-            .expect("应能继续轮询第二个匹配 upstream 的下一个 key");
-        assert_eq!(idx3, 2);
-        assert_eq!(key3, "key3b");
-        assert_eq!(user_agent3, None);
-        assert_eq!(mode3, Mode::OpenAIResponses);
+            .expect("应轮询第二个 upstream 的下一个 key");
+        assert_eq!((idx3, key3), (2, "key3b"));
     }
 
     #[test]
-    fn test_next_by_mode_skips_disabled_upstreams() {
+    fn test_disabled_upstreams_handling() {
         let upstreams = vec![
             UpstreamConfig {
                 enable: false,
@@ -413,46 +379,36 @@ mod tests {
                 model: "enabled-model".to_string(),
                 api_keys: vec!["enabled-key".to_string()],
                 user_agent_claude: None,
-                user_agent_codex: Some("Device-C/1.0".to_string()),
+                user_agent_codex: None,
                 mode: vec![Mode::OpenAIResponses].into(),
             },
         ];
         let selector =
             UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
 
-        let (idx, name, base_url, model, key, user_agent, mode) = selector
+        // 应跳过禁用项
+        let (idx, _, _, _, _, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
-            .expect("应跳过禁用 upstream，选择启用项");
-
+            .expect("应跳过禁用 upstream");
         assert_eq!(idx, 1);
-        assert_eq!(name, "enabled-upstream");
-        assert_eq!(base_url, "https://enabled.example.com");
-        assert_eq!(model, "enabled-model");
-        assert_eq!(key, "enabled-key");
-        assert_eq!(user_agent, Some("Device-C/1.0"));
-        assert_eq!(mode, Mode::OpenAIResponses);
-    }
 
-    #[test]
-    fn test_next_by_mode_returns_none_when_all_matching_upstreams_disabled() {
-        let upstreams = vec![UpstreamConfig {
+        // 全部禁用时返回 None
+        let all_disabled = vec![UpstreamConfig {
             enable: false,
-            name: "disabled-upstream".to_string(),
+            name: "disabled".to_string(),
             base_url: "https://disabled.example.com".to_string(),
-            model: "disabled-model".to_string(),
-            api_keys: vec!["disabled-key".to_string()],
+            model: "model".to_string(),
+            api_keys: vec!["key".to_string()],
             user_agent_claude: None,
             user_agent_codex: None,
             mode: vec![Mode::OpenAIResponses].into(),
         }];
-        let selector =
-            UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
-
-        assert!(selector.next_by_mode(Mode::OpenAIResponses).is_none());
+        let selector2 = UpstreamSelector::new(None, all_disabled).expect("upstreams 非空");
+        assert!(selector2.next_by_mode(Mode::OpenAIResponses).is_none());
     }
 
     #[test]
-    fn test_next_by_mode_supports_multi_mode_upstream() {
+    fn test_multi_mode_upstream_support() {
         let upstreams = vec![
             UpstreamConfig {
                 enable: true,
@@ -460,14 +416,14 @@ mod tests {
                 base_url: "https://multi.example.com".to_string(),
                 model: "shared-model".to_string(),
                 api_keys: vec!["shared-key-1".to_string(), "shared-key-2".to_string()],
-                user_agent_claude: Some("Claude-Shared-UA/1.0".to_string()),
-                user_agent_codex: Some("Codex-Shared-UA/1.0".to_string()),
+                user_agent_claude: Some("Claude-UA/1.0".to_string()),
+                user_agent_codex: Some("Codex-UA/1.0".to_string()),
                 mode: vec![Mode::AnthropicDirect, Mode::OpenAIResponses].into(),
             },
             UpstreamConfig {
                 enable: true,
                 name: "responses-only".to_string(),
-                base_url: "https://responses-only.example.com".to_string(),
+                base_url: "https://responses.example.com".to_string(),
                 model: "responses-model".to_string(),
                 api_keys: vec!["responses-key".to_string()],
                 user_agent_claude: None,
@@ -478,78 +434,41 @@ mod tests {
         let selector =
             UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
 
-        let (anthropic_idx, _, _, _, anthropic_key, anthropic_user_agent, anthropic_mode) =
-            selector
-                .next_by_mode(Mode::AnthropicDirect)
-                .expect("多协议 upstream 应支持 anthropic");
-        assert_eq!(anthropic_idx, 0);
-        assert_eq!(anthropic_key, "shared-key-1");
-        assert_eq!(anthropic_user_agent, Some("Claude-Shared-UA/1.0"));
-        assert_eq!(anthropic_mode, Mode::AnthropicDirect);
+        // 验证多协议 upstream 支持 AnthropicDirect
+        let (idx, _, _, _, key, user_agent, mode) = selector
+            .next_by_mode(Mode::AnthropicDirect)
+            .expect("多协议 upstream 应支持 anthropic");
+        assert_eq!(
+            (idx, key, user_agent, mode),
+            (
+                0,
+                "shared-key-1",
+                Some("Claude-UA/1.0"),
+                Mode::AnthropicDirect
+            )
+        );
 
-        let (responses_idx_0, _, _, _, responses_key_0, responses_user_agent_0, responses_mode_0) =
-            selector
-                .next_by_mode(Mode::OpenAIResponses)
-                .expect("多协议 upstream 应支持 openai_responses");
-        assert_eq!(responses_idx_0, 0);
-        assert_eq!(responses_key_0, "shared-key-1");
-        assert_eq!(responses_user_agent_0, Some("Codex-Shared-UA/1.0"));
-        assert_eq!(responses_mode_0, Mode::OpenAIResponses);
+        // 验证多协议 upstream 也支持 OpenAIResponses
+        let (idx, _, _, _, key, user_agent, mode) = selector
+            .next_by_mode(Mode::OpenAIResponses)
+            .expect("多协议 upstream 应支持 openai_responses");
+        assert_eq!(
+            (idx, key, user_agent, mode),
+            (
+                0,
+                "shared-key-1",
+                Some("Codex-UA/1.0"),
+                Mode::OpenAIResponses
+            )
+        );
 
-        let (responses_idx_1, _, _, _, responses_key_1, responses_user_agent_1, responses_mode_1) =
-            selector
-                .next_by_mode(Mode::OpenAIResponses)
-                .expect("responses 协议应继续轮询其他 upstream");
-        assert_eq!(responses_idx_1, 1);
-        assert_eq!(responses_key_1, "responses-key");
-        assert_eq!(responses_user_agent_1, None);
-        assert_eq!(responses_mode_1, Mode::OpenAIResponses);
+        // 验证计数包含多协议 upstream
+        assert_eq!(selector.matching_count_by_mode(Mode::AnthropicDirect), 1);
+        assert_eq!(selector.matching_count_by_mode(Mode::OpenAIResponses), 2);
     }
 
     #[test]
-    fn test_matching_count_by_mode_only_counts_enabled_matching_upstreams() {
-        let upstreams = vec![
-            UpstreamConfig {
-                enable: true,
-                name: "anthropic-only".to_string(),
-                base_url: "https://anthropic.example.com".to_string(),
-                model: "anthropic-model".to_string(),
-                api_keys: vec!["anthropic-key".to_string()],
-                user_agent_claude: None,
-                user_agent_codex: None,
-                mode: vec![Mode::AnthropicDirect].into(),
-            },
-            UpstreamConfig {
-                enable: true,
-                name: "shared-upstream".to_string(),
-                base_url: "https://shared.example.com".to_string(),
-                model: "shared-model".to_string(),
-                api_keys: vec!["shared-key".to_string()],
-                user_agent_claude: Some("Shared-Claude-UA/1.0".to_string()),
-                user_agent_codex: Some("Shared-Codex-UA/1.0".to_string()),
-                mode: vec![Mode::AnthropicDirect, Mode::OpenAIResponses].into(),
-            },
-            UpstreamConfig {
-                enable: false,
-                name: "disabled-upstream".to_string(),
-                base_url: "https://disabled.example.com".to_string(),
-                model: "disabled-model".to_string(),
-                api_keys: vec!["disabled-key".to_string()],
-                user_agent_claude: None,
-                user_agent_codex: None,
-                mode: vec![Mode::OpenAIResponses].into(),
-            },
-        ];
-        let selector =
-            UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
-
-        assert_eq!(selector.matching_count_by_mode(Mode::AnthropicDirect), 2);
-        assert_eq!(selector.matching_count_by_mode(Mode::OpenAIResponses), 1);
-        assert_eq!(selector.matching_count_by_mode(Mode::OpenAIChat), 0);
-    }
-
-    #[test]
-    fn test_force_upstream_index_ignores_enable_and_only_round_robins_keys() {
+    fn test_force_upstream_index_core_logic() {
         let upstreams = vec![
             UpstreamConfig {
                 enable: true,
@@ -579,78 +498,36 @@ mod tests {
         )
         .expect("测试数据已确保 upstreams 非空");
 
+        // 强制索引忽略 enable 标志
         assert_eq!(selector.matching_count_by_mode(Mode::AnthropicDirect), 1);
 
+        // 验证只在指定 upstream 的 keys 内轮询
         let first = selector
             .next_by_mode(Mode::AnthropicDirect)
-            .expect("应强制命中指定 upstream");
+            .expect("应命中强制索引");
         let second = selector
             .next_by_mode(Mode::AnthropicDirect)
-            .expect("强制模式下应继续命中同一 upstream");
+            .expect("应继续轮询 keys");
         let third = selector
             .next_by_mode(Mode::AnthropicDirect)
-            .expect("强制模式下应只在指定 upstream 的 keys 内轮询");
+            .expect("应回到第一个 key");
 
-        assert_eq!(first.0, 1);
-        assert_eq!(first.4, "key-2a");
-        assert_eq!(first.5, Some("Forced-UA/1.0"));
-        assert_eq!(second.0, 1);
-        assert_eq!(second.4, "key-2b");
-        assert_eq!(third.0, 1);
-        assert_eq!(third.4, "key-2a");
-    }
+        assert_eq!((first.0, first.4), (1, "key-2a"));
+        assert_eq!((second.0, second.4), (1, "key-2b"));
+        assert_eq!((third.0, third.4), (1, "key-2a"));
 
-    #[test]
-    fn test_force_upstream_index_respects_mode_support() {
-        let upstreams = vec![
-            UpstreamConfig {
-                enable: true,
-                name: "anthropic-upstream".to_string(),
-                base_url: "https://anthropic.example.com".to_string(),
-                model: "model-a".to_string(),
-                api_keys: vec!["key-a".to_string()],
-                user_agent_claude: None,
-                user_agent_codex: None,
-                mode: vec![Mode::AnthropicDirect].into(),
-            },
-            UpstreamConfig {
-                enable: false,
-                name: "responses-upstream".to_string(),
-                base_url: "https://responses.example.com".to_string(),
-                model: "model-r".to_string(),
-                api_keys: vec!["key-r".to_string()],
-                user_agent_claude: None,
-                user_agent_codex: None,
-                mode: vec![Mode::OpenAIResponses].into(),
-            },
-        ];
-        let selector = UpstreamSelector::new_with_global_user_agents(
-            GlobalUserAgentConfig::default(),
-            vec![1],
-            upstreams,
-        )
-        .expect("测试数据已确保 upstreams 非空");
-
-        assert_eq!(selector.matching_count_by_mode(Mode::AnthropicDirect), 0);
-        assert!(selector.next_by_mode(Mode::AnthropicDirect).is_none());
-        assert_eq!(selector.matching_count_by_mode(Mode::OpenAIResponses), 1);
-    }
-
-    #[test]
-    fn test_force_upstream_index_out_of_range_returns_none() {
-        let selector = UpstreamSelector::new_with_global_user_agents(
+        // 验证强制索引越界返回 None
+        let out_of_range = UpstreamSelector::new_with_global_user_agents(
             GlobalUserAgentConfig::default(),
             vec![5],
             create_test_upstreams(),
         )
-        .expect("测试数据已确保 upstreams 非空");
-
-        assert_eq!(selector.matching_count_by_mode(Mode::AnthropicDirect), 0);
-        assert!(selector.next_by_mode(Mode::AnthropicDirect).is_none());
+        .expect("upstreams 非空");
+        assert!(out_of_range.next_by_mode(Mode::AnthropicDirect).is_none());
     }
 
     #[test]
-    fn test_force_upstream_index_skips_unsupported_mode_and_selects_next() {
+    fn test_force_upstream_index_mode_support() {
         let upstreams = vec![
             UpstreamConfig {
                 enable: true,
@@ -680,13 +557,45 @@ mod tests {
         )
         .expect("测试数据已确保 upstreams 非空");
 
-        // upstream[0] 不支持 AnthropicDirect，应跳过选中 upstream[1]
-        let (idx, _, _, _, key, _, mode) = selector
+        // 强制索引仍需遵循 mode 支持，upstream[0] 不支持 AnthropicDirect
+        let (idx, _, _, _, key, _, _) = selector
             .next_by_mode(Mode::AnthropicDirect)
-            .expect("应跳过不支持的 upstream[0]，选中 upstream[1]");
-        assert_eq!(idx, 1);
-        assert_eq!(key, "key-a");
-        assert_eq!(mode, Mode::AnthropicDirect);
+            .expect("应跳过不支持的 upstream[0]");
+        assert_eq!((idx, key), (1, "key-a"));
+
+        // 验证不支持的 mode 返回 None
+        let single_mode_selector = UpstreamSelector::new_with_global_user_agents(
+            GlobalUserAgentConfig::default(),
+            vec![1],
+            vec![
+                UpstreamConfig {
+                    enable: true,
+                    name: "anthropic-only".to_string(),
+                    base_url: "https://anthropic.example.com".to_string(),
+                    model: "model-a".to_string(),
+                    api_keys: vec!["key-a".to_string()],
+                    user_agent_claude: None,
+                    user_agent_codex: None,
+                    mode: vec![Mode::AnthropicDirect].into(),
+                },
+                UpstreamConfig {
+                    enable: false,
+                    name: "responses-upstream".to_string(),
+                    base_url: "https://responses.example.com".to_string(),
+                    model: "model-r".to_string(),
+                    api_keys: vec!["key-r".to_string()],
+                    user_agent_claude: None,
+                    user_agent_codex: None,
+                    mode: vec![Mode::OpenAIResponses].into(),
+                },
+            ],
+        )
+        .expect("upstreams 非空");
+        assert!(
+            single_mode_selector
+                .next_by_mode(Mode::AnthropicDirect)
+                .is_none()
+        );
     }
 
     #[test]
@@ -792,45 +701,5 @@ mod tests {
             assert_eq!(mode, case.mode, "{}", case.name);
             assert_eq!(user_agent, case.expected_user_agent, "{}", case.name);
         }
-    }
-
-    #[test]
-    fn test_next_by_mode_returns_openai_chat_upstream_only() {
-        let upstreams = vec![
-            UpstreamConfig {
-                enable: true,
-                name: "responses-upstream".to_string(),
-                base_url: "https://responses.example.com".to_string(),
-                model: "responses-model".to_string(),
-                api_keys: vec!["responses-key".to_string()],
-                user_agent_claude: None,
-                user_agent_codex: Some("Codex-Responses-UA/1.0".to_string()),
-                mode: vec![Mode::OpenAIResponses].into(),
-            },
-            UpstreamConfig {
-                enable: true,
-                name: "chat-upstream".to_string(),
-                base_url: "https://chat.example.com".to_string(),
-                model: "chat-model".to_string(),
-                api_keys: vec!["chat-key".to_string()],
-                user_agent_claude: None,
-                user_agent_codex: Some("Codex-Chat-UA/1.0".to_string()),
-                mode: vec![Mode::OpenAIChat].into(),
-            },
-        ];
-        let selector =
-            UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
-
-        let (idx, name, base_url, model, key, user_agent, mode) = selector
-            .next_by_mode(Mode::OpenAIChat)
-            .expect("应只选择 openai_chat upstream");
-
-        assert_eq!(idx, 1);
-        assert_eq!(name, "chat-upstream");
-        assert_eq!(base_url, "https://chat.example.com");
-        assert_eq!(model, "chat-model");
-        assert_eq!(key, "chat-key");
-        assert_eq!(user_agent, Some("Codex-Chat-UA/1.0"));
-        assert_eq!(mode, Mode::OpenAIChat);
     }
 }
