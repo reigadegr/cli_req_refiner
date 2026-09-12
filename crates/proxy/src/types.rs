@@ -86,4 +86,5 @@ pub struct RetryContext<'a> {
     pub(crate) atomic_config: &'a Arc<AtomicConfig>,
     pub(crate) body_bytes: &'a Bytes,
     pub(crate) max_attempts: usize,
+    pub(crate) request_model: Option<&'a str>,
 }

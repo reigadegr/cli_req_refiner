@@ -22,6 +22,17 @@ use crate::{
 const MAX_UPSTREAM_ATTEMPTS: usize = 300;
 const RETRY_DELAY_MS: u64 = 200;
 
+/// 从请求体中提取 model 字段
+fn extract_model_from_body(body_bytes: &[u8]) -> Option<String> {
+    if body_bytes.is_empty() {
+        return None;
+    }
+
+    use serde_json::from_slice;
+    let json: serde_json::Value = from_slice(body_bytes).ok()?;
+    json.get("model")?.as_str().map(str::to_owned)
+}
+
 pub const fn proxy_plan_for_mode(mode: Mode) -> ProxyPlan {
     match mode {
         Mode::AnthropicDirect => ProxyPlan {
@@ -92,6 +103,12 @@ async fn run_proxy(
 
     log_request_meta(req.method().as_str(), &request_url, req.headers());
 
+    // 提取请求体中的 model 字段，用于过滤 upstream
+    let request_model = extract_model_from_body(&body_bytes);
+    if let Some(ref model) = request_model {
+        tracing::info!("📝 请求体中的 model: {}", model);
+    }
+
     let body_bytes = prepare_request_body(plan, body_bytes, &request_url, &cfg, stats, res);
     let Some(body_bytes) = body_bytes else {
         return;
@@ -105,13 +122,21 @@ async fn run_proxy(
 
     let max_attempts = if cfg.server.force_upstream_index.is_empty() {
         selector
-            .matching_count_by_mode(plan.upstream_mode)
+            .matching_count_by_mode_and_model(plan.upstream_mode, request_model.as_deref())
             .min(MAX_UPSTREAM_ATTEMPTS)
     } else {
         MAX_UPSTREAM_ATTEMPTS
     };
     if max_attempts == 0 {
-        tracing::error!("{}", plan.missing_upstream_message);
+        if let Some(ref model) = request_model {
+            tracing::error!(
+                "{}: 没有配置 model={} 的 upstream",
+                plan.missing_upstream_message,
+                model
+            );
+        } else {
+            tracing::error!("{}", plan.missing_upstream_message);
+        }
         res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
         return;
     }
@@ -125,6 +150,7 @@ async fn run_proxy(
             atomic_config: config,
             body_bytes: &body_bytes,
             max_attempts,
+            request_model: request_model.as_deref(),
         },
     )
     .await
@@ -180,7 +206,7 @@ async fn try_upstreams(plan: ProxyPlan, ctx: RetryContext<'_>) -> RetryLoopResul
             // 配置不可用（如所有 upstream 已禁用）
             break;
         };
-        let Some(selected_upstream) = select_upstream(&selector, plan) else {
+        let Some(selected_upstream) = select_upstream(&selector, plan, ctx.request_model) else {
             // 无匹配当前 mode 的 upstream
             break;
         };
@@ -253,9 +279,13 @@ async fn try_upstreams(plan: ProxyPlan, ctx: RetryContext<'_>) -> RetryLoopResul
     last_failure.map_or_else(|| RetryLoopResult::NoSelection, RetryLoopResult::Failed)
 }
 
-fn select_upstream(selector: &UpstreamSelector, plan: ProxyPlan) -> Option<SelectedUpstream> {
+fn select_upstream(
+    selector: &UpstreamSelector,
+    plan: ProxyPlan,
+    request_model: Option<&str>,
+) -> Option<SelectedUpstream> {
     let (index, name, base_url, model, api_key, user_agent, mode) =
-        selector.next_by_mode(plan.upstream_mode)?;
+        selector.next_by_mode_and_model(plan.upstream_mode, request_model)?;
 
     Some(SelectedUpstream {
         index,

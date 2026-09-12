@@ -92,7 +92,11 @@ impl UpstreamSelector {
             .or_else(|| self.global_user_agents.resolve_for_mode(expected_mode))
     }
 
-    fn forced_upstream_for_mode(&self, expected_mode: Mode) -> Option<(usize, &UpstreamConfig)> {
+    fn forced_upstream_for_mode_and_model(
+        &self,
+        expected_mode: Mode,
+        request_model: Option<&str>,
+    ) -> Option<(usize, &UpstreamConfig)> {
         if self.force_upstream_index.is_empty() {
             return None;
         }
@@ -105,10 +109,20 @@ impl UpstreamSelector {
                 && upstream.mode.supports(expected_mode)
                 && self.model_matches(upstream)
             {
+                // 如果指定了 request_model，则必须匹配
+                if let Some(req_model) = request_model {
+                    if upstream.model != req_model {
+                        continue;
+                    }
+                }
                 return Some((index, upstream));
             }
         }
         None
+    }
+
+    fn forced_upstream_for_mode(&self, expected_mode: Mode) -> Option<(usize, &UpstreamConfig)> {
+        self.forced_upstream_for_mode_and_model(expected_mode, None)
     }
 
     /// 检查 upstream 的 model 是否匹配 `force_model` 列表
@@ -129,14 +143,25 @@ impl UpstreamSelector {
 
     /// 获取指定 mode 当前可用的 upstream 数量
     pub fn matching_count_by_mode(&self, expected_mode: Mode) -> usize {
+        self.matching_count_by_mode_and_model(expected_mode, None)
+    }
+
+    /// 获取指定 mode 和 model 当前可用的 upstream 数量
+    /// 当 `request_model` 为 Some 时，只统计 upstream.model 与其相同的上游
+    pub fn matching_count_by_mode_and_model(
+        &self,
+        expected_mode: Mode,
+        request_model: Option<&str>,
+    ) -> usize {
         if !self.force_upstream_index.is_empty() {
             return self
                 .force_upstream_index
                 .iter()
                 .filter(|&&idx| {
-                    self.upstreams
-                        .get(idx)
-                        .is_some_and(|u| self.matches_mode_and_model(u, expected_mode))
+                    self.upstreams.get(idx).is_some_and(|u| {
+                        self.matches_mode_and_model(u, expected_mode)
+                            && request_model.map_or(true, |req_model| u.model == req_model)
+                    })
                 })
                 .count();
         }
@@ -144,7 +169,9 @@ impl UpstreamSelector {
         self.upstreams
             .iter()
             .filter(|upstream| {
-                upstream.enable && self.matches_mode_and_model(upstream, expected_mode)
+                upstream.enable
+                    && self.matches_mode_and_model(upstream, expected_mode)
+                    && request_model.map_or(true, |req_model| upstream.model == req_model)
             })
             .count()
     }
@@ -163,10 +190,24 @@ impl UpstreamSelector {
     /// 请求6: upstream[1], key[2]
     /// 请求7: upstream[0], key[0]  (循环)
     ///
+    /// 如果提供了 `request_model`，则只在 upstream.model 与其相同的上游之间轮询
+    ///
     /// 返回 (upstream索引, `name`, `base_url`, model, `api_key`, `user_agent`, `mode`)
     ///
     pub fn next_by_mode(&self, expected_mode: Mode) -> Option<UpstreamSelection<'_>> {
-        if let Some((upstream_idx, upstream)) = self.forced_upstream_for_mode(expected_mode) {
+        self.next_by_mode_and_model(expected_mode, None)
+    }
+
+    /// 获取下一个匹配指定 mode 和 model 的 upstream
+    /// 当 `request_model` 为 Some 时，只在 upstream.model 与其相同的上游之间轮询
+    pub fn next_by_mode_and_model(
+        &self,
+        expected_mode: Mode,
+        request_model: Option<&str>,
+    ) -> Option<UpstreamSelection<'_>> {
+        if let Some((upstream_idx, upstream)) =
+            self.forced_upstream_for_mode_and_model(expected_mode, request_model)
+        {
             let mode_idx = self
                 .mode_counter(expected_mode)
                 .fetch_add(1, Ordering::Relaxed);
@@ -188,7 +229,7 @@ impl UpstreamSelector {
             ));
         }
 
-        let matching_count = self.matching_count_by_mode(expected_mode);
+        let matching_count = self.matching_count_by_mode_and_model(expected_mode, request_model);
 
         if matching_count == 0 {
             return None;
@@ -204,6 +245,13 @@ impl UpstreamSelector {
             self.upstreams.iter().enumerate().find(|(_, upstream)| {
                 if !upstream.enable || !self.matches_mode_and_model(upstream, expected_mode) {
                     return false;
+                }
+
+                // 额外检查请求 model 是否匹配
+                if let Some(req_model) = request_model {
+                    if upstream.model != req_model {
+                        return false;
+                    }
                 }
 
                 let is_target = seen == target_pos;
