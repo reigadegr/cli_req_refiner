@@ -18,6 +18,13 @@ export RUSTFLAGS="
 
 if [ "$1" = "release" ] || [ "$1" = "r" ]; then
     cargo build -r
+    bin=target/release/cli_req_refiner
 else
     cargo build
+    bin=target/debug/cli_req_refiner
+fi
+
+patchelf --remove-rpath "$bin"
+if readelf -dW "$bin" | grep -q 'libtermux-platform-ns.so'; then
+    patchelf --remove-needed libtermux-platform-ns.so "$bin"
 fi
