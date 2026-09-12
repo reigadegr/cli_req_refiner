@@ -66,6 +66,8 @@ pub struct OptimizationConfig {
     pub enable_suggestion_mode_skip: bool,
     #[serde(default = "default_true")]
     pub enable_filepath_extraction_mock: bool,
+    #[serde(default = "default_true")]
+    pub enable_strip_billing_header: bool,
 }
 
 impl Default for OptimizationConfig {
@@ -77,6 +79,7 @@ impl Default for OptimizationConfig {
             enable_title_generation_skip: default_true(),
             enable_suggestion_mode_skip: default_true(),
             enable_filepath_extraction_mock: default_true(),
+            enable_strip_billing_header: default_true(),
         }
     }
 }

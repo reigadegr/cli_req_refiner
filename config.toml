@@ -51,3 +51,4 @@ enable_historical_analysis_mock = true
 enable_title_generation_skip = true
 enable_suggestion_mode_skip = true
 enable_filepath_extraction_mock = true
+enable_strip_billing_header = true

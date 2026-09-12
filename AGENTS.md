@@ -11,6 +11,7 @@
   - 建议模式
   - 历史分析
   - 文件路径提取
+  - 计费头清理（可选）
 - **请求统计** - 追踪 Token 消耗（总量、用户输入、历史上下文、助手回复、系统提示）
 
 ## 常用命令
@@ -146,6 +147,7 @@ enable_historical_analysis_mock = true
 enable_title_generation_skip = true
 enable_suggestion_mode_skip = true
 enable_filepath_extraction_mock = true
+enable_strip_billing_header = true
 ```
 
 配置变更会通过 `notify` crate 自动检测并重载，无需重启服务。
@@ -157,7 +159,7 @@ enable_filepath_extraction_mock = true
 1. 客户端（Claude Code / Codex）向代理发送请求
 2. 路由层通过短路径别名（`/responses` → `/v1/responses`，`/chat/completions` → `/v1/chat/completions`）或直接 `/v1/**` 进入 `unified_proxy`
 3. `classify_request_path` 根据路径分发：`/v1/messages` → Anthropic，`/v1/responses` → OpenAI Responses，`/v1/chat/completions` → OpenAI Chat
-4. `prepare_request_body` 执行请求体准备：URL 拦截检测（`count_tokens`）→ `strip_billing_header_from_system` → JSON 拦截检测（配额/标题/建议/历史/文件路径）→ Token 统计
+4. `prepare_request_body` 执行请求体准备：URL 拦截检测（`count_tokens`）→ 可选的 `strip_billing_header_from_system`（受 `enable_strip_billing_header` 控制）→ JSON 拦截检测（配额/标题/建议/历史/文件路径）→ Token 统计
 5. 如需拦截 → `OptimizationResponse` 返回本地 mock 响应
 6. 否则 → `try_upstreams` 重试循环：`select_upstream` 双层轮询 → `apply_upstream_model` → `make_proxy_url` → `build_proxy_request` → 发送请求
 7. `forward_proxy_response` 流式返回响应（SSE 透传或非流式收集 + gzip 解压），失败则退避重试下一个上游

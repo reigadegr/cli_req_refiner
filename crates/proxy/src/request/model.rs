@@ -1,18 +1,6 @@
 use serde_json::{Value, json, to_vec};
 use tracing::info;
 
-const MAX_TOKENS_OVERRIDE: u64 = 64000;
-
-/// 强制覆盖请求体中的 `max_tokens` 字段为固定值
-pub fn override_max_tokens_in_json(json: &mut Value) {
-    if json
-        .get("max_tokens")
-        .is_some_and(serde_json::Value::is_number)
-    {
-        json["max_tokens"] = json!(MAX_TOKENS_OVERRIDE);
-    }
-}
-
 /// 尝试覆盖请求体中的 model 字段
 pub fn override_model_in_json(json: &mut Value, model: &str) {
     let original_model = json.get("model").and_then(|m| m.as_str());

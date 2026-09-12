@@ -110,11 +110,10 @@ impl UpstreamSelector {
                 && self.model_matches(upstream)
             {
                 // 如果指定了 request_model，则必须匹配
-                if let Some(req_model) = request_model {
-                    if upstream.model != req_model {
+                if let Some(req_model) = request_model
+                    && upstream.model != req_model {
                         continue;
                     }
-                }
                 return Some((index, upstream));
             }
         }
@@ -160,7 +159,7 @@ impl UpstreamSelector {
                 .filter(|&&idx| {
                     self.upstreams.get(idx).is_some_and(|u| {
                         self.matches_mode_and_model(u, expected_mode)
-                            && request_model.map_or(true, |req_model| u.model == req_model)
+                            && request_model.is_none_or(|req_model| u.model == req_model)
                     })
                 })
                 .count();
@@ -171,7 +170,7 @@ impl UpstreamSelector {
             .filter(|upstream| {
                 upstream.enable
                     && self.matches_mode_and_model(upstream, expected_mode)
-                    && request_model.map_or(true, |req_model| upstream.model == req_model)
+                    && request_model.is_none_or(|req_model| upstream.model == req_model)
             })
             .count()
     }
@@ -248,11 +247,10 @@ impl UpstreamSelector {
                 }
 
                 // 额外检查请求 model 是否匹配
-                if let Some(req_model) = request_model {
-                    if upstream.model != req_model {
+                if let Some(req_model) = request_model
+                    && upstream.model != req_model {
                         return false;
                     }
-                }
 
                 let is_target = seen == target_pos;
                 seen += 1;

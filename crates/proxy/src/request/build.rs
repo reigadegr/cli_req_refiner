@@ -4,13 +4,13 @@ use bytes::Bytes;
 use http::{Error as HttpError, HeaderValue};
 use http_body_util::Full;
 use hyper::Request as HyperRequest;
-use my_config::{Config, Mode};
+use my_config::Config;
 use salvo::prelude::*;
 
 use super::{
     body::{parse_body_json, serialize_body_json},
     intercept::{req_local_intercept_by_url, req_local_intercept_from_json},
-    model::{override_max_tokens_in_json, strip_billing_header_from_system},
+    model::strip_billing_header_from_system,
 };
 use crate::{
     response::log_full_body,
@@ -37,8 +37,9 @@ pub fn prepare_request_body(
 
     if matches!(plan.kind, ProxyKind::Anthropic) && !current.is_empty() {
         if let Ok(mut request_json) = parse_body_json(&current) {
-            strip_billing_header_from_system(&mut request_json);
-            override_max_tokens_in_json(&mut request_json);
+            if cfg.optimizations.enable_strip_billing_header {
+                strip_billing_header_from_system(&mut request_json);
+            }
 
             if req_local_intercept_from_json(res, &request_json, request_url, cfg) {
                 return None;
@@ -54,16 +55,6 @@ pub fn prepare_request_body(
             }
         } else {
             tracing::debug!("Skipping Claude body refinement because request JSON parsing failed");
-        }
-    }
-
-    if matches!(plan.upstream_mode, Mode::OpenAIChat)
-        && !current.is_empty()
-        && let Ok(mut request_json) = parse_body_json(&current)
-    {
-        override_max_tokens_in_json(&mut request_json);
-        if let Ok(updated) = serialize_body_json(&request_json) {
-            current = updated;
         }
     }
 

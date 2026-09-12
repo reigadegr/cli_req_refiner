@@ -43,7 +43,7 @@ salvo = { version = "0.93.0", default-features = false, features = [
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 taplo = "0.14.0"
-tokio = { version = "1.52.3", features = ["full", "io-uring"] }
+tokio = { version = "1.52.3", features = ["full"] }
 toml = "1.1.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = [
