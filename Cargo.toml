@@ -11,17 +11,17 @@ edition = "2024"
 my_config = { path = "crates/config" }
 my_selector = { path = "crates/selector" }
 my_proxy = { path = "crates/proxy" }
-anyhow = "1.0.102"
-arc-swap = "1.9.1"
-bytes = "1.11.1"
-chrono = "0.4.44"
-flate2 = "1.1.9"
-futures-util = { version = "0.3.32", default-features = false, features = [
+anyhow = "1.0.104"
+arc-swap = "1.9.2"
+bytes = "1.12.1"
+chrono = "0.4.45"
+flate2 = "1.1.10"
+futures-util = { version = "0.3.34", default-features = false, features = [
   "std",
 ] }
-http = "1.4.0"
-http-body-util = "0.1.3"
-hyper = { version = "1.9.0", features = ["full"] }
+http = "1.5.0"
+http-body-util = "0.1.5"
+hyper = { version = "1.11.1", features = ["full"] }
 hyper-rustls = { version = "0.27.9", default-features = false, features = [
   "http1",
   "http2",
@@ -30,9 +30,9 @@ hyper-rustls = { version = "0.27.9", default-features = false, features = [
   "webpki-roots",
 ] }
 hyper-util = { version = "0.1.20", features = ["full"] }
-mimalloc = { version = "0.1.50", features = ["v2", "no_thp", "override"] }
+mimalloc = { version = "0.1.52", features = ["v2", "no_thp", "override"] }
 notify = "8.2.0"
-salvo = { version = "0.93.0", default-features = false, features = [
+salvo = { version = "0.96.0", default-features = false, features = [
   "server",
   "http1",
   "http2",
@@ -40,11 +40,11 @@ salvo = { version = "0.93.0", default-features = false, features = [
   "affix-state",
   "test",
 ] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 taplo = "0.14.0"
-tokio = { version = "1.52.3", features = ["full"] }
-toml = "1.1.2"
+tokio = { version = "1.53.1", features = ["full"] }
+toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = [
   "local-time",
