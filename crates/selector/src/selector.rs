@@ -111,17 +111,14 @@ impl UpstreamSelector {
             {
                 // 如果指定了 request_model，则必须匹配
                 if let Some(req_model) = request_model
-                    && upstream.model != req_model {
-                        continue;
-                    }
+                    && upstream.model != req_model
+                {
+                    continue;
+                }
                 return Some((index, upstream));
             }
         }
         None
-    }
-
-    fn forced_upstream_for_mode(&self, expected_mode: Mode) -> Option<(usize, &UpstreamConfig)> {
-        self.forced_upstream_for_mode_and_model(expected_mode, None)
     }
 
     /// 检查 upstream 的 model 是否匹配 `force_model` 列表
@@ -248,9 +245,10 @@ impl UpstreamSelector {
 
                 // 额外检查请求 model 是否匹配
                 if let Some(req_model) = request_model
-                    && upstream.model != req_model {
-                        return false;
-                    }
+                    && upstream.model != req_model
+                {
+                    return false;
+                }
 
                 let is_target = seen == target_pos;
                 seen += 1;
