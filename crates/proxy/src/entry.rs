@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Duration};
 use bytes::Bytes;
 use my_config::{AtomicConfig, Mode, UpstreamSelector};
 use salvo::prelude::*;
+use serde_json::from_slice;
 
 use super::{
     request::prepare_request_body,
@@ -28,7 +29,6 @@ fn extract_model_from_body(body_bytes: &[u8]) -> Option<String> {
         return None;
     }
 
-    use serde_json::from_slice;
     let json: serde_json::Value = from_slice(body_bytes).ok()?;
     json.get("model")?.as_str().map(str::to_owned)
 }

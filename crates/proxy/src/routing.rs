@@ -155,10 +155,10 @@ mod tests {
     #[tokio::test]
     async fn route_table_only_adds_exact_responses_short_path() {
         #[endpoint]
-        async fn alias_marker() {}
+        fn alias_marker() {}
 
         #[endpoint]
-        async fn v1_marker() {}
+        fn v1_marker() {}
 
         let service = Service::new(
             Router::new()
