@@ -6,6 +6,7 @@
 //!    即：upstream[0].key[0] -> upstream[0].key[1] -> ... -> upstream[1].key[0] -> ...
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tracing::info;
 
 use super::{Mode, UpstreamConfig, model::GlobalUserAgentConfig};
 
@@ -107,7 +108,7 @@ impl UpstreamSelector {
                 if let Some(req_model) = request_model
                     && upstream.model != req_model
                 {
-                    continue;
+                    info!("传入的{req_model}不匹配，将覆盖为{0:?}", upstream.model);
                 }
                 return Some((index, upstream));
             }
