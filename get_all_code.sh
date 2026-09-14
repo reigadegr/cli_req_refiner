@@ -6,7 +6,7 @@ if [ ! -d target ]; then
 fi
 name=$(basename $(dirname "$0"))
 {
-    for i in $(find crates/cli_req_refiner/src -name "*.rs") Cargo.toml crates/cli_req_refiner/Cargo.toml; do
+    for i in $(find crates -name "*.rs") $(find crates -name "Cargo.toml")  $(find app -name "*.rs") app/Cargo.toml Cargo.toml; do
         echo "这是$i: "
         cat $i
         echo "\n--------------\n"
