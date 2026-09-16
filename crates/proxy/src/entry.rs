@@ -21,7 +21,14 @@ use crate::{
 };
 
 const MAX_UPSTREAM_ATTEMPTS: usize = 300;
-const RETRY_DELAY_MS: u64 = 200;
+
+/// 指数退避休眠时长（毫秒），按重试次数索引，最长封顶 1s
+const RETRY_DELAYS_MS: [u64; 5] = [300, 400, 600, 800, 1000];
+
+fn retry_delay_ms(retry_count: usize) -> u64 {
+    let index = retry_count.saturating_sub(1).min(RETRY_DELAYS_MS.len() - 1);
+    RETRY_DELAYS_MS[index]
+}
 
 /// 从请求体中提取 model 字段
 fn extract_model_from_body(body_bytes: &[u8]) -> Option<String> {
@@ -190,13 +197,15 @@ async fn try_upstreams(plan: ProxyPlan, ctx: RetryContext<'_>) -> RetryLoopResul
 
     for attempt in 1..=ctx.max_attempts {
         if attempt > 1 {
+            let retry_count = attempt - 1;
+            let delay_ms = retry_delay_ms(retry_count);
             tracing::info!(
                 "{}: 第 {} 次重试，休眠 {}ms",
                 proxy_failure_label(plan.kind),
-                attempt,
-                RETRY_DELAY_MS
+                retry_count,
+                delay_ms
             );
-            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
 
         // 每次迭代重新读取最新配置，以支持运行期间热重载
