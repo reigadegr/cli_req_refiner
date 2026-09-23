@@ -100,7 +100,7 @@ impl UpstreamSelector {
         let len = self.force_upstream_index.len();
         for i in 0..len {
             let pos = (mode_idx + i) % len;
-            let index = *self.force_upstream_index.get(pos)?;
+            let index = self.force_upstream_index[pos];
             if let Some(upstream) = self.upstreams.get(index)
                 && upstream.mode.supports(expected_mode)
             {
@@ -114,12 +114,6 @@ impl UpstreamSelector {
             }
         }
         None
-    }
-
-    /// 检查 upstream 是否匹配指定的 mode
-    #[must_use]
-    fn matches_mode(upstream: &UpstreamConfig, expected_mode: Mode) -> bool {
-        upstream.mode.supports(expected_mode)
     }
 
     /// 获取指定 mode 当前可用的 upstream 数量
@@ -141,7 +135,7 @@ impl UpstreamSelector {
                 .filter(|&&idx| {
                     self.upstreams
                         .get(idx)
-                        .is_some_and(|u| Self::matches_mode(u, expected_mode))
+                        .is_some_and(|u| u.mode.supports(expected_mode))
                 })
                 .count();
         }
@@ -150,7 +144,7 @@ impl UpstreamSelector {
             .iter()
             .filter(|upstream| {
                 upstream.enable
-                    && Self::matches_mode(upstream, expected_mode)
+                    && upstream.mode.supports(expected_mode)
                     && request_model.is_none_or(|req_model| upstream.contains_model(req_model))
             })
             .count()
@@ -223,7 +217,10 @@ impl UpstreamSelector {
         let mut seen = 0;
         let (upstream_idx, upstream) =
             self.upstreams.iter().enumerate().find(|(_, upstream)| {
-                if !upstream.enable || !Self::matches_mode(upstream, expected_mode) {
+                let matches = upstream.enable
+                    && upstream.mode.supports(expected_mode)
+                    && request_model.is_none_or(|req_model| upstream.contains_model(req_model));
+                if !matches {
                     return false;
                 }
 
@@ -587,6 +584,50 @@ mod tests {
         assert!(
             single_mode_selector
                 .next_by_mode(Mode::AnthropicDirect)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_next_by_mode_and_model_filters_by_request_model() {
+        let upstreams = vec![
+            UpstreamConfig {
+                enable: true,
+                name: "model-a-upstream".to_string(),
+                base_url: "https://a.example.com".to_string(),
+                model: vec!["model-a".to_string()],
+                api_keys: vec!["key-a".to_string()],
+                user_agent_claude: None,
+                user_agent_codex: None,
+                mode: vec![Mode::OpenAIResponses].into(),
+            },
+            UpstreamConfig {
+                enable: true,
+                name: "model-b-upstream".to_string(),
+                base_url: "https://b.example.com".to_string(),
+                model: vec!["model-b".to_string()],
+                api_keys: vec!["key-b".to_string()],
+                user_agent_claude: None,
+                user_agent_codex: None,
+                mode: vec![Mode::OpenAIResponses].into(),
+            },
+        ];
+        let selector =
+            UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
+
+        assert_eq!(
+            selector.matching_count_by_mode_and_model(Mode::OpenAIResponses, Some("model-b")),
+            1
+        );
+        for _ in 0..4 {
+            let (idx, _, _, _, key, _, _) = selector
+                .next_by_mode_and_model(Mode::OpenAIResponses, Some("model-b"))
+                .expect("应只命中包含 model-b 的 upstream");
+            assert_eq!((idx, key), (1, "key-b"));
+        }
+        assert!(
+            selector
+                .next_by_mode_and_model(Mode::OpenAIResponses, Some("model-x"))
                 .is_none()
         );
     }

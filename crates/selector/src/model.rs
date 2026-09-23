@@ -200,12 +200,6 @@ impl UpstreamConfig {
         }
     }
 
-    /// 返回 model 数组中的第一个 model；数组为空时返回空字符串
-    #[must_use]
-    pub fn first_model(&self) -> &str {
-        self.model.first().map_or("", String::as_str)
-    }
-
     /// 检查 model 数组是否包含指定 model
     #[must_use]
     pub fn contains_model(&self, req_model: &str) -> bool {
