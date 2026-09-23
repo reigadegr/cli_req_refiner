@@ -127,14 +127,9 @@ async fn run_proxy(
         return;
     };
 
-    let max_attempts = if cfg.server.force_upstream_index.is_empty() {
-        selector
-            .matching_count_by_mode_and_model(plan.upstream_mode, request_model.as_deref())
-            .min(MAX_UPSTREAM_ATTEMPTS)
-    } else {
-        MAX_UPSTREAM_ATTEMPTS
-    };
-    if max_attempts == 0 {
+    let matching_count =
+        selector.matching_count_by_mode_and_model(plan.upstream_mode, request_model.as_deref());
+    if matching_count == 0 {
         if let Some(ref model) = request_model {
             tracing::error!(
                 "{}: 没有配置 model={} 的 upstream",
@@ -156,7 +151,6 @@ async fn run_proxy(
             client,
             atomic_config: config,
             body_bytes: &body_bytes,
-            max_attempts,
             request_model: request_model.as_deref(),
         },
     )
@@ -165,17 +159,15 @@ async fn run_proxy(
         RetryLoopResult::Forwarded => {}
         RetryLoopResult::Failed(UpstreamAttemptFailure::Response(failed_response)) => {
             tracing::error!(
-                "{} after exhausting {} upstream attempt(s); returning last upstream response",
+                "{} after exhausting model fallback chain; returning last upstream response",
                 proxy_failure_label(plan.kind),
-                max_attempts
             );
             render_failed_upstream_response(res, failed_response);
         }
         RetryLoopResult::Failed(UpstreamAttemptFailure::Transport(error_message)) => {
             tracing::error!(
-                "{} after exhausting {} upstream attempt(s): {}",
+                "{} after exhausting model fallback chain: {}",
                 proxy_failure_label(plan.kind),
-                max_attempts,
                 error_message
             );
             res.status_code(StatusCode::BAD_GATEWAY);
@@ -192,10 +184,29 @@ async fn run_proxy(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn try_upstreams(plan: ProxyPlan, ctx: RetryContext<'_>) -> RetryLoopResult {
     let mut last_failure = None;
 
-    for attempt in 1..=ctx.max_attempts {
+    let current_cfg = ctx.atomic_config.get();
+    let forced = !current_cfg.server.force_upstream_index.is_empty();
+    let Some(selector) = ctx.atomic_config.get_upstream_selector() else {
+        return RetryLoopResult::NoSelection;
+    };
+    let Some(selected_upstream) = select_upstream(&selector, plan, ctx.request_model) else {
+        return RetryLoopResult::NoSelection;
+    };
+
+    let models = &selected_upstream.models;
+    let max_attempts = if models.is_empty() {
+        1
+    } else if forced {
+        MAX_UPSTREAM_ATTEMPTS
+    } else {
+        models.len()
+    };
+
+    for attempt in 1..=max_attempts {
         if attempt > 1 {
             let retry_count = attempt - 1;
             let delay_ms = retry_delay_ms(retry_count);
@@ -208,21 +219,16 @@ async fn try_upstreams(plan: ProxyPlan, ctx: RetryContext<'_>) -> RetryLoopResul
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
 
-        // 每次迭代重新读取最新配置，以支持运行期间热重载
-        let current_cfg = ctx.atomic_config.get();
-        let forced = !current_cfg.server.force_upstream_index.is_empty();
-        let Some(selector) = ctx.atomic_config.get_upstream_selector() else {
-            // 配置不可用（如所有 upstream 已禁用）
-            break;
-        };
-        let Some(selected_upstream) = select_upstream(&selector, plan, ctx.request_model) else {
-            // 无匹配当前 mode 的 upstream
-            break;
+        let model = if models.is_empty() {
+            ""
+        } else {
+            let model_index = (attempt - 1) % models.len();
+            &models[model_index]
         };
 
-        log_selected_upstream(plan.kind, &selected_upstream, attempt, ctx.max_attempts);
+        log_selected_upstream(plan.kind, &selected_upstream, model, attempt, max_attempts);
 
-        let attempt_body = apply_upstream_model(ctx.body_bytes.clone(), &selected_upstream.model);
+        let attempt_body = apply_upstream_model(ctx.body_bytes.clone(), model);
         let (upstream_url, host) = make_proxy_url(&selected_upstream.base_url, ctx.req);
 
         let proxy_req = match super::request::build_proxy_request(
@@ -249,8 +255,9 @@ async fn try_upstreams(plan: ProxyPlan, ctx: RetryContext<'_>) -> RetryLoopResul
                         log_failed_upstream_response(
                             plan.kind,
                             &selected_upstream,
+                            model,
                             attempt,
-                            ctx.max_attempts,
+                            max_attempts,
                             current_cfg.server.log_res_body,
                             &failed_response,
                             forced,
@@ -261,8 +268,9 @@ async fn try_upstreams(plan: ProxyPlan, ctx: RetryContext<'_>) -> RetryLoopResul
                         log_transport_failure(
                             plan.kind,
                             &selected_upstream,
+                            model,
                             attempt,
-                            ctx.max_attempts,
+                            max_attempts,
                             &error_message,
                             forced,
                         );
@@ -275,8 +283,9 @@ async fn try_upstreams(plan: ProxyPlan, ctx: RetryContext<'_>) -> RetryLoopResul
                 log_transport_failure(
                     plan.kind,
                     &selected_upstream,
+                    model,
                     attempt,
-                    ctx.max_attempts,
+                    max_attempts,
                     &error_message,
                     forced,
                 );
@@ -293,14 +302,14 @@ fn select_upstream(
     plan: ProxyPlan,
     request_model: Option<&str>,
 ) -> Option<SelectedUpstream> {
-    let (index, name, base_url, model, api_key, user_agent, mode) =
+    let (index, name, base_url, models, api_key, user_agent, mode) =
         selector.next_by_mode_and_model(plan.upstream_mode, request_model)?;
 
     Some(SelectedUpstream {
         index,
         name: name.to_owned(),
         base_url: base_url.to_owned(),
-        model: model.to_owned(),
+        models: models.to_vec(),
         api_key: api_key.to_owned(),
         user_agent: user_agent.map(str::to_owned),
         mode,
@@ -325,6 +334,7 @@ pub const fn proxy_failure_label(kind: ProxyKind) -> &'static str {
 fn log_selected_upstream(
     kind: ProxyKind,
     upstream: &SelectedUpstream,
+    model: &str,
     attempt: usize,
     total_attempts: usize,
 ) {
@@ -341,15 +351,17 @@ fn log_selected_upstream(
         attempt,
         total_attempts,
         upstream.base_url,
-        upstream.model,
+        model,
         upstream.api_key.chars().take(8).collect::<String>(),
         upstream.mode
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn log_failed_upstream_response(
     kind: ProxyKind,
     upstream: &SelectedUpstream,
+    model: &str,
     attempt: usize,
     total_attempts: usize,
     log_response_body: bool,
@@ -373,7 +385,7 @@ fn log_failed_upstream_response(
         let retry_hint = if forced {
             "重试"
         } else {
-            "重试下一个 upstream"
+            "重试下一个 model"
         };
         tracing::warn!(
             "{}: upstream[{}] name={name} attempt {attempt}/{total_attempts} returned status {}, {retry_hint}; base_url={}, model={}{body_suffix}",
@@ -381,16 +393,16 @@ fn log_failed_upstream_response(
             upstream.index,
             failed_response.status,
             upstream.base_url,
-            upstream.model,
+            model,
         );
     } else {
         tracing::error!(
-            "{}: upstream[{}] name={name} attempt {attempt}/{total_attempts} returned status {}, no upstream left; base_url={}, model={}{body_suffix}",
+            "{}: upstream[{}] name={name} attempt {attempt}/{total_attempts} returned status {}, no model left; base_url={}, model={}{body_suffix}",
             proxy_failure_label(kind),
             upstream.index,
             failed_response.status,
             upstream.base_url,
-            upstream.model,
+            model,
         );
     }
 }
@@ -398,6 +410,7 @@ fn log_failed_upstream_response(
 fn log_transport_failure(
     kind: ProxyKind,
     upstream: &SelectedUpstream,
+    model: &str,
     attempt: usize,
     total_attempts: usize,
     error_message: &str,
@@ -409,22 +422,22 @@ fn log_transport_failure(
         let retry_hint = if forced {
             "重试"
         } else {
-            "重试下一个 upstream"
+            "重试下一个 model"
         };
         tracing::warn!(
             "{}: upstream[{}] name={name} attempt {attempt}/{total_attempts} transport error, {retry_hint}; base_url={}, model={}, error={error_message}",
             proxy_failure_label(kind),
             upstream.index,
             upstream.base_url,
-            upstream.model,
+            model,
         );
     } else {
         tracing::error!(
-            "{}: upstream[{}] name={name} attempt {attempt}/{total_attempts} transport error, no upstream left; base_url={}, model={}, error={error_message}",
+            "{}: upstream[{}] name={name} attempt {attempt}/{total_attempts} transport error, no model left; base_url={}, model={}, error={error_message}",
             proxy_failure_label(kind),
             upstream.index,
             upstream.base_url,
-            upstream.model,
+            model,
         );
     }
 }

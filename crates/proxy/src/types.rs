@@ -45,7 +45,7 @@ pub struct SelectedUpstream {
     pub(crate) index: usize,
     pub(crate) name: String,
     pub(crate) base_url: String,
-    pub(crate) model: String,
+    pub(crate) models: Vec<String>,
     pub(crate) api_key: String,
     pub(crate) user_agent: Option<String>,
     pub(crate) mode: Mode,
@@ -85,6 +85,5 @@ pub struct RetryContext<'a> {
     pub(crate) client: &'a Arc<HttpClient>,
     pub(crate) atomic_config: &'a Arc<AtomicConfig>,
     pub(crate) body_bytes: &'a Bytes,
-    pub(crate) max_attempts: usize,
     pub(crate) request_model: Option<&'a str>,
 }

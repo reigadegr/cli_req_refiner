@@ -175,8 +175,12 @@ pub struct UpstreamConfig {
     pub name: String,
     #[serde(alias = "endpoint")]
     pub base_url: String,
-    #[serde(default)]
-    pub model: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_models",
+        serialize_with = "serialize_models"
+    )]
+    pub model: Vec<String>,
     #[serde(default)]
     pub api_keys: Vec<String>,
     #[serde(default, alias = "ua_claude")]
@@ -194,6 +198,62 @@ impl UpstreamConfig {
             Mode::AnthropicDirect => self.user_agent_claude.as_deref(),
             Mode::OpenAIResponses | Mode::OpenAIChat => self.user_agent_codex.as_deref(),
         }
+    }
+
+    /// 返回 model 数组中的第一个 model；数组为空时返回空字符串
+    #[must_use]
+    pub fn first_model(&self) -> &str {
+        self.model.first().map_or("", String::as_str)
+    }
+
+    /// 检查 model 数组是否包含指定 model
+    #[must_use]
+    pub fn contains_model(&self, req_model: &str) -> bool {
+        self.model.iter().any(|m| m == req_model)
+    }
+}
+
+/// 反序列化 model 字段：接受字符串或字符串数组
+fn deserialize_models<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct ModelsVisitor;
+
+    impl<'de> Visitor<'de> for ModelsVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a model string or an array of model strings")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(vec![value.to_owned()])
+        }
+
+        fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: de::SeqAccess<'de>,
+        {
+            Vec::<String>::deserialize(de::value::SeqAccessDeserializer::new(seq))
+        }
+    }
+
+    deserializer.deserialize_any(ModelsVisitor)
+}
+
+/// 序列化 model 字段：单元素序列化为字符串，多元素序列化为数组
+fn serialize_models<S>(models: &[String], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if models.len() == 1 {
+        serializer.serialize_str(&models[0])
+    } else {
+        models.serialize(serializer)
     }
 }
 

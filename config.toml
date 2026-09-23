@@ -23,7 +23,10 @@ user_agent_global_codex = "Codex/0.31.0 (Linux; Android 14)"
 enable = true
 name = "zhipu-main"
 base_url = "https://open.bigmodel.cn/api/anthropic"
-model = "glm-4.7"
+# model 支持单个字符串或数组；数组形式可实现模型级故障转移：
+# 当第一个模型访问出错时，休眠后自动重试第二个模型，以此类推。
+# 全部轮询完毕后回到第一个模型继续尝试；任一模型成功响应后，下次请求从第一个模型开始。
+model = ["glm-4.7", "glm-4.6"]
 api_keys = ["your_api_key1", "your_api_key2"]
 # Claude 请求命中该 upstream 时使用
 user_agent_claude = "Claude-Code/1.0.84 (Linux; Android 14)"

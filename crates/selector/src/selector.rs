@@ -14,7 +14,7 @@ type UpstreamSelection<'a> = (
     usize,
     &'a str,
     &'a str,
-    &'a str,
+    &'a [String],
     &'a str,
     Option<&'a str>,
     Mode,
@@ -106,9 +106,9 @@ impl UpstreamSelector {
             {
                 // 如果指定了 request_model，则必须匹配
                 if let Some(req_model) = request_model
-                    && upstream.model != req_model
+                    && !upstream.contains_model(req_model)
                 {
-                    info!("传入的{req_model}不匹配，将覆盖为{0:?}", upstream.model);
+                    info!("传入的{req_model}不匹配，将覆盖为{:?}", upstream.model);
                 }
                 return Some((index, upstream));
             }
@@ -128,7 +128,7 @@ impl UpstreamSelector {
     }
 
     /// 获取指定 mode 和 model 当前可用的 upstream 数量
-    /// 当 `request_model` 为 Some 时，只统计 upstream.model 与其相同的上游
+    /// 当 `request_model` 为 Some 时，只统计 model 数组包含该值的上游
     pub fn matching_count_by_mode_and_model(
         &self,
         expected_mode: Mode,
@@ -139,10 +139,9 @@ impl UpstreamSelector {
                 .force_upstream_index
                 .iter()
                 .filter(|&&idx| {
-                    self.upstreams.get(idx).is_some_and(|u| {
-                        Self::matches_mode(u, expected_mode)
-                            && request_model.is_none_or(|req_model| u.model == req_model)
-                    })
+                    self.upstreams
+                        .get(idx)
+                        .is_some_and(|u| Self::matches_mode(u, expected_mode))
                 })
                 .count();
         }
@@ -152,7 +151,7 @@ impl UpstreamSelector {
             .filter(|upstream| {
                 upstream.enable
                     && Self::matches_mode(upstream, expected_mode)
-                    && request_model.is_none_or(|req_model| upstream.model == req_model)
+                    && request_model.is_none_or(|req_model| upstream.contains_model(req_model))
             })
             .count()
     }
@@ -171,7 +170,7 @@ impl UpstreamSelector {
     /// 请求6: upstream[1], key[2]
     /// 请求7: upstream[0], key[0]  (循环)
     ///
-    /// 如果提供了 `request_model`，则只在 upstream.model 与其相同的上游之间轮询
+    /// 如果提供了 `request_model`，则只在 model 数组包含该值的上游之间轮询
     ///
     /// 返回 (upstream索引, `name`, `base_url`, model, `api_key`, `user_agent`, `mode`)
     ///
@@ -180,7 +179,7 @@ impl UpstreamSelector {
     }
 
     /// 获取下一个匹配指定 mode 和 model 的 upstream
-    /// 当 `request_model` 为 Some 时，只在 upstream.model 与其相同的上游之间轮询
+    /// 当 `request_model` 为 Some 时，只在 model 数组包含该值的上游之间轮询
     pub fn next_by_mode_and_model(
         &self,
         expected_mode: Mode,
@@ -228,13 +227,6 @@ impl UpstreamSelector {
                     return false;
                 }
 
-                // 额外检查请求 model 是否匹配
-                if let Some(req_model) = request_model
-                    && upstream.model != req_model
-                {
-                    return false;
-                }
-
                 let is_target = seen == target_pos;
                 seen += 1;
                 is_target
@@ -271,7 +263,7 @@ mod tests {
                 enable: true,
                 name: "upstream-1".to_string(),
                 base_url: "https://upstream1.example.com".to_string(),
-                model: "model1".to_string(),
+                model: vec!["model1".to_string()],
                 api_keys: vec!["key1a".to_string(), "key1b".to_string()],
                 user_agent_claude: Some("Device-A/1.0".to_string()),
                 user_agent_codex: None,
@@ -281,7 +273,7 @@ mod tests {
                 enable: true,
                 name: "upstream-2".to_string(),
                 base_url: "https://upstream2.example.com".to_string(),
-                model: "model2".to_string(),
+                model: vec!["model2".to_string()],
                 api_keys: vec![
                     "key2a".to_string(),
                     "key2b".to_string(),
@@ -308,7 +300,7 @@ mod tests {
                 enable: true,
                 name: "upstream-1".to_string(),
                 base_url: "https://upstream1.example.com".to_string(),
-                model: "model1".to_string(),
+                model: vec!["model1".to_string()],
                 api_keys: vec!["key1a".to_string()],
                 user_agent_claude: None,
                 user_agent_codex: None,
@@ -318,7 +310,7 @@ mod tests {
                 enable: true,
                 name: "upstream-2".to_string(),
                 base_url: "https://upstream2.example.com".to_string(),
-                model: "model2".to_string(),
+                model: vec!["model2".to_string()],
                 api_keys: vec!["key2a".to_string(), "key2b".to_string()],
                 user_agent_claude: None,
                 user_agent_codex: None,
@@ -328,7 +320,7 @@ mod tests {
                 enable: true,
                 name: "upstream-3".to_string(),
                 base_url: "https://upstream3.example.com".to_string(),
-                model: "model3".to_string(),
+                model: vec!["model3".to_string()],
                 api_keys: vec!["key3a".to_string(), "key3b".to_string()],
                 user_agent_claude: None,
                 user_agent_codex: None,
@@ -367,7 +359,7 @@ mod tests {
                 enable: false,
                 name: "disabled-upstream".to_string(),
                 base_url: "https://disabled.example.com".to_string(),
-                model: "disabled-model".to_string(),
+                model: vec!["disabled-model".to_string()],
                 api_keys: vec!["disabled-key".to_string()],
                 user_agent_claude: None,
                 user_agent_codex: None,
@@ -377,7 +369,7 @@ mod tests {
                 enable: true,
                 name: "enabled-upstream".to_string(),
                 base_url: "https://enabled.example.com".to_string(),
-                model: "enabled-model".to_string(),
+                model: vec!["enabled-model".to_string()],
                 api_keys: vec!["enabled-key".to_string()],
                 user_agent_claude: None,
                 user_agent_codex: None,
@@ -398,7 +390,7 @@ mod tests {
             enable: false,
             name: "disabled".to_string(),
             base_url: "https://disabled.example.com".to_string(),
-            model: "model".to_string(),
+            model: vec!["model".to_string()],
             api_keys: vec!["key".to_string()],
             user_agent_claude: None,
             user_agent_codex: None,
@@ -415,7 +407,7 @@ mod tests {
                 enable: true,
                 name: "shared-upstream".to_string(),
                 base_url: "https://multi.example.com".to_string(),
-                model: "shared-model".to_string(),
+                model: vec!["shared-model".to_string()],
                 api_keys: vec!["shared-key-1".to_string(), "shared-key-2".to_string()],
                 user_agent_claude: Some("Claude-UA/1.0".to_string()),
                 user_agent_codex: Some("Codex-UA/1.0".to_string()),
@@ -425,7 +417,7 @@ mod tests {
                 enable: true,
                 name: "responses-only".to_string(),
                 base_url: "https://responses.example.com".to_string(),
-                model: "responses-model".to_string(),
+                model: vec!["responses-model".to_string()],
                 api_keys: vec!["responses-key".to_string()],
                 user_agent_claude: None,
                 user_agent_codex: None,
@@ -475,7 +467,7 @@ mod tests {
                 enable: true,
                 name: "first-upstream".to_string(),
                 base_url: "https://first.example.com".to_string(),
-                model: "model-1".to_string(),
+                model: vec!["model-1".to_string()],
                 api_keys: vec!["key-1a".to_string(), "key-1b".to_string()],
                 user_agent_claude: None,
                 user_agent_codex: None,
@@ -485,7 +477,7 @@ mod tests {
                 enable: false,
                 name: "forced-upstream".to_string(),
                 base_url: "https://forced.example.com".to_string(),
-                model: "model-2".to_string(),
+                model: vec!["model-2".to_string()],
                 api_keys: vec!["key-2a".to_string(), "key-2b".to_string()],
                 user_agent_claude: Some("Forced-UA/1.0".to_string()),
                 user_agent_codex: None,
@@ -534,7 +526,7 @@ mod tests {
                 enable: true,
                 name: "openai-only".to_string(),
                 base_url: "https://openai.example.com".to_string(),
-                model: "model-o".to_string(),
+                model: vec!["model-o".to_string()],
                 api_keys: vec!["key-o".to_string()],
                 user_agent_claude: None,
                 user_agent_codex: None,
@@ -544,7 +536,7 @@ mod tests {
                 enable: true,
                 name: "anthropic-upstream".to_string(),
                 base_url: "https://anthropic.example.com".to_string(),
-                model: "model-a".to_string(),
+                model: vec!["model-a".to_string()],
                 api_keys: vec!["key-a".to_string()],
                 user_agent_claude: None,
                 user_agent_codex: None,
@@ -573,7 +565,7 @@ mod tests {
                     enable: true,
                     name: "anthropic-only".to_string(),
                     base_url: "https://anthropic.example.com".to_string(),
-                    model: "model-a".to_string(),
+                    model: vec!["model-a".to_string()],
                     api_keys: vec!["key-a".to_string()],
                     user_agent_claude: None,
                     user_agent_codex: None,
@@ -583,7 +575,7 @@ mod tests {
                     enable: false,
                     name: "responses-upstream".to_string(),
                     base_url: "https://responses.example.com".to_string(),
-                    model: "model-r".to_string(),
+                    model: vec!["model-r".to_string()],
                     api_keys: vec!["key-r".to_string()],
                     user_agent_claude: None,
                     user_agent_codex: None,
@@ -686,7 +678,7 @@ mod tests {
                     enable: true,
                     name: "ua-upstream".to_string(),
                     base_url: "https://ua.example.com".to_string(),
-                    model: "ua-model".to_string(),
+                    model: vec!["ua-model".to_string()],
                     api_keys: vec!["ua-key".to_string()],
                     user_agent_claude: case.upstream_claude.map(str::to_owned),
                     user_agent_codex: case.upstream_codex.map(str::to_owned),
