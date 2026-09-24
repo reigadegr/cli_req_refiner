@@ -15,8 +15,7 @@ type UpstreamSelection<'a> = (
     &'a str,
     &'a str,
     &'a [String],
-    &'a [String],
-    usize,
+    &'a str,
     Option<&'a str>,
     Mode,
 );
@@ -151,7 +150,7 @@ impl UpstreamSelector {
             .count()
     }
 
-    /// 获取下一个匹配指定 mode 的 upstream 及其 `api_keys` 和起始 key 索引
+    /// 获取下一个匹配指定 mode 的 upstream 和对应的 `api_key`
     /// 双层轮询策略：
     /// 1. 外层：按 round-robin 选择 upstream
     /// 2. 内层：在该 upstream 内部按 round-robin 选择 `api_key`
@@ -167,7 +166,7 @@ impl UpstreamSelector {
     ///
     /// 如果提供了 `request_model`，则只在 model 数组包含该值的上游之间轮询
     ///
-    /// 返回 (upstream索引, `name`, `base_url`, models, `api_keys`, key起始索引, `user_agent`, `mode`)
+    /// 返回 (upstream索引, `name`, `base_url`, models, `api_key`, `user_agent`, `mode`)
     ///
     pub fn next_by_mode(&self, expected_mode: Mode) -> Option<UpstreamSelection<'_>> {
         self.next_by_mode_and_model(expected_mode, None)
@@ -186,10 +185,11 @@ impl UpstreamSelector {
             let mode_idx = self
                 .mode_counter(expected_mode)
                 .fetch_add(1, Ordering::Relaxed);
-            let key_idx = if upstream.api_keys.is_empty() {
-                0
+            let api_key = if upstream.api_keys.is_empty() {
+                ""
             } else {
-                mode_idx % upstream.api_keys.len()
+                let key_idx = mode_idx % upstream.api_keys.len();
+                &upstream.api_keys[key_idx]
             };
 
             return Some((
@@ -197,8 +197,7 @@ impl UpstreamSelector {
                 &upstream.name,
                 &upstream.base_url,
                 &upstream.model,
-                &upstream.api_keys,
-                key_idx,
+                api_key,
                 self.resolve_user_agent(upstream, expected_mode),
                 expected_mode,
             ));
@@ -230,11 +229,12 @@ impl UpstreamSelector {
                 is_target
             })?;
 
-        let key_idx = if upstream.api_keys.is_empty() {
-            0
+        let api_key = if upstream.api_keys.is_empty() {
+            ""
         } else {
             let key_count = upstream.api_keys.len();
-            (mode_idx / matching_count) % key_count
+            let key_idx = (mode_idx / matching_count) % key_count;
+            &upstream.api_keys[key_idx]
         };
 
         Some((
@@ -242,8 +242,7 @@ impl UpstreamSelector {
             &upstream.name,
             &upstream.base_url,
             &upstream.model,
-            &upstream.api_keys,
-            key_idx,
+            api_key,
             self.resolve_user_agent(upstream, expected_mode),
             expected_mode,
         ))
@@ -329,28 +328,25 @@ mod tests {
             UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
 
         // 验证轮询顺序：upstream[1] key[0] -> upstream[2] key[0] -> upstream[1] key[1] -> upstream[2] key[1]
-        let (idx0, _, _, _, keys0, ki0, _, mode0) = selector
+        let (idx0, _, _, _, key0, _, mode0) = selector
             .next_by_mode(Mode::OpenAIResponses)
             .expect("应能选到第一个匹配 upstream");
-        assert_eq!(
-            (idx0, keys0[ki0].as_str(), mode0),
-            (1, "key2a", Mode::OpenAIResponses)
-        );
+        assert_eq!((idx0, key0, mode0), (1, "key2a", Mode::OpenAIResponses));
 
-        let (idx1, _, _, _, keys1, ki1, _, _) = selector
+        let (idx1, _, _, _, key1, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
             .expect("应轮询到下一个 upstream");
-        assert_eq!((idx1, keys1[ki1].as_str()), (2, "key3a"));
+        assert_eq!((idx1, key1), (2, "key3a"));
 
-        let (idx2, _, _, _, keys2, ki2, _, _) = selector
+        let (idx2, _, _, _, key2, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
             .expect("应回到第一个 upstream 的下一个 key");
-        assert_eq!((idx2, keys2[ki2].as_str()), (1, "key2b"));
+        assert_eq!((idx2, key2), (1, "key2b"));
 
-        let (idx3, _, _, _, keys3, ki3, _, _) = selector
+        let (idx3, _, _, _, key3, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
             .expect("应轮询第二个 upstream 的下一个 key");
-        assert_eq!((idx3, keys3[ki3].as_str()), (2, "key3b"));
+        assert_eq!((idx3, key3), (2, "key3b"));
     }
 
     #[test]
@@ -381,7 +377,7 @@ mod tests {
             UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
 
         // 应跳过禁用项
-        let (idx, _, _, _, _, _, _, _) = selector
+        let (idx, _, _, _, _, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
             .expect("应跳过禁用 upstream");
         assert_eq!(idx, 1);
@@ -429,11 +425,11 @@ mod tests {
             UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
 
         // 验证多协议 upstream 支持 AnthropicDirect
-        let (idx, _, _, _, keys, ki, user_agent, mode) = selector
+        let (idx, _, _, _, key, user_agent, mode) = selector
             .next_by_mode(Mode::AnthropicDirect)
             .expect("多协议 upstream 应支持 anthropic");
         assert_eq!(
-            (idx, keys[ki].as_str(), user_agent, mode),
+            (idx, key, user_agent, mode),
             (
                 0,
                 "shared-key-1",
@@ -443,11 +439,11 @@ mod tests {
         );
 
         // 验证多协议 upstream 也支持 OpenAIResponses
-        let (idx, _, _, _, keys, ki, user_agent, mode) = selector
+        let (idx, _, _, _, key, user_agent, mode) = selector
             .next_by_mode(Mode::OpenAIResponses)
             .expect("多协议 upstream 应支持 openai_responses");
         assert_eq!(
-            (idx, keys[ki].as_str(), user_agent, mode),
+            (idx, key, user_agent, mode),
             (
                 0,
                 "shared-key-1",
@@ -506,9 +502,9 @@ mod tests {
             .next_by_mode(Mode::AnthropicDirect)
             .expect("应回到第一个 key");
 
-        assert_eq!((first.0, first.4[first.5].as_str()), (1, "key-2a"));
-        assert_eq!((second.0, second.4[second.5].as_str()), (1, "key-2b"));
-        assert_eq!((third.0, third.4[third.5].as_str()), (1, "key-2a"));
+        assert_eq!((first.0, first.4), (1, "key-2a"));
+        assert_eq!((second.0, second.4), (1, "key-2b"));
+        assert_eq!((third.0, third.4), (1, "key-2a"));
 
         // 验证强制索引越界返回 None
         let out_of_range = UpstreamSelector::new_with_global_user_agents(
@@ -552,10 +548,10 @@ mod tests {
         .expect("测试数据已确保 upstreams 非空");
 
         // 强制索引仍需遵循 mode 支持，upstream[0] 不支持 AnthropicDirect
-        let (idx, _, _, _, keys, ki, _, _) = selector
+        let (idx, _, _, _, key, _, _) = selector
             .next_by_mode(Mode::AnthropicDirect)
             .expect("应跳过不支持的 upstream[0]");
-        assert_eq!((idx, keys[ki].as_str()), (1, "key-a"));
+        assert_eq!((idx, key), (1, "key-a"));
 
         // 验证不支持的 mode 返回 None
         let single_mode_selector = UpstreamSelector::new_with_global_user_agents(
@@ -624,10 +620,10 @@ mod tests {
             1
         );
         for _ in 0..4 {
-            let (idx, _, _, _, keys, ki, _, _) = selector
+            let (idx, _, _, _, key, _, _) = selector
                 .next_by_mode_and_model(Mode::OpenAIResponses, Some("model-b"))
                 .expect("应只命中包含 model-b 的 upstream");
-            assert_eq!((idx, keys[ki].as_str()), (1, "key-b"));
+            assert_eq!((idx, key), (1, "key-b"));
         }
         assert!(
             selector
@@ -732,7 +728,7 @@ mod tests {
             )
             .expect("测试数据已确保 upstreams 非空");
 
-            let (_, _, _, _, _, _, user_agent, mode) = selector
+            let (_, _, _, _, _, user_agent, mode) = selector
                 .next_by_mode(case.mode)
                 .expect("应能返回匹配 mode 的 upstream");
 
