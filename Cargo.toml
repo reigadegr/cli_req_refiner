@@ -22,7 +22,7 @@ futures-util = { version = "0.3.34", default-features = false, features = [
 http = "1.5.0"
 http-body-util = "0.1.5"
 hyper = { version = "1.11.1", features = ["full"] }
-hyper-rustls = { version = "0.27.9", default-features = false, features = [
+hyper-rustls = { version = "0.27.10", default-features = false, features = [
   "http1",
   "http2",
   "tls12",
@@ -32,7 +32,7 @@ hyper-rustls = { version = "0.27.9", default-features = false, features = [
 hyper-util = { version = "0.1.20", features = ["full"] }
 mimalloc = { version = "0.1.52", features = ["v2", "no_thp", "override"] }
 notify = "8.2.0"
-salvo = { version = "0.96.0", default-features = false, features = [
+salvo = { version = "1.0.0", default-features = false, features = [
   "server",
   "http1",
   "http2",
