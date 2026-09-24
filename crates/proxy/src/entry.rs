@@ -226,9 +226,16 @@ async fn try_upstreams(plan: ProxyPlan, ctx: RetryContext<'_>) -> RetryLoopResul
             &models[model_index]
         };
 
-        let api_key = &selected_upstream.api_key;
+        let api_key = selector.next_api_key(selected_upstream.index);
 
-        log_selected_upstream(plan.kind, &selected_upstream, model, attempt, max_attempts);
+        log_selected_upstream(
+            plan.kind,
+            &selected_upstream,
+            model,
+            api_key,
+            attempt,
+            max_attempts,
+        );
 
         let attempt_body = apply_upstream_model(ctx.body_bytes.clone(), model);
         let (upstream_url, host) = make_proxy_url(&selected_upstream.base_url, ctx.req);
@@ -304,7 +311,7 @@ fn select_upstream(
     plan: ProxyPlan,
     request_model: Option<&str>,
 ) -> Option<SelectedUpstream> {
-    let (index, name, base_url, models, api_key, user_agent, mode) =
+    let (index, name, base_url, models, user_agent, mode) =
         selector.next_by_mode_and_model(plan.upstream_mode, request_model)?;
 
     Some(SelectedUpstream {
@@ -312,7 +319,6 @@ fn select_upstream(
         name: name.to_owned(),
         base_url: base_url.to_owned(),
         models: models.to_vec(),
-        api_key: api_key.to_owned(),
         user_agent: user_agent.map(str::to_owned),
         mode,
     })
@@ -337,6 +343,7 @@ fn log_selected_upstream(
     kind: ProxyKind,
     upstream: &SelectedUpstream,
     model: &str,
+    api_key: &str,
     attempt: usize,
     total_attempts: usize,
 ) {
@@ -354,7 +361,7 @@ fn log_selected_upstream(
         total_attempts,
         upstream.base_url,
         model,
-        upstream.api_key.chars().take(8).collect::<String>(),
+        api_key.chars().take(8).collect::<String>(),
         upstream.mode
     );
 }

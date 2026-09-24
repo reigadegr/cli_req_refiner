@@ -46,7 +46,6 @@ pub struct SelectedUpstream {
     pub(crate) name: String,
     pub(crate) base_url: String,
     pub(crate) models: Vec<String>,
-    pub(crate) api_key: String,
     pub(crate) user_agent: Option<String>,
     pub(crate) mode: Mode,
 }

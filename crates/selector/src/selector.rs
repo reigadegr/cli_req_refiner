@@ -1,26 +1,17 @@
-//! Upstream 轮询选择器
+//! Upstream 与 `api_key` 轮询选择器
 //!
-//! 使用双层 round-robin 策略：
-//! 1. 外层：遍历每个 upstream
-//! 2. 内层：在每个 upstream 内部遍历其 `api_keys`
-//!    即：upstream[0].key[0] -> upstream[0].key[1] -> ... -> upstream[1].key[0] -> ...
+//! - upstream：按请求 round-robin 轮询选择（[`UpstreamSelector::next_by_mode_and_model`]）
+//! - `api_key`：按尝试 round-robin 轮换（[`UpstreamSelector::next_api_key`]），
+//!   因此不论请求成功还是失败重试，每一次尝试都会使用下一个 key
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::info;
 
 use super::{Mode, UpstreamConfig, model::GlobalUserAgentConfig};
 
-type UpstreamSelection<'a> = (
-    usize,
-    &'a str,
-    &'a str,
-    &'a [String],
-    &'a str,
-    Option<&'a str>,
-    Mode,
-);
+type UpstreamSelection<'a> = (usize, &'a str, &'a str, &'a [String], Option<&'a str>, Mode);
 
-/// Upstream 选择器，使用双层 round-robin 策略
+/// Upstream 选择器，upstream 按请求轮询，`api_key` 按尝试轮换
 pub struct UpstreamSelector {
     /// 上游配置列表
     upstreams: Vec<UpstreamConfig>,
@@ -34,6 +25,8 @@ pub struct UpstreamSelector {
     next_index_openai_responses: AtomicUsize,
     /// `openai_chat` 模式独立轮询计数
     next_index_openai_chat: AtomicUsize,
+    /// 每个 upstream 独立的 `api_key` 轮询计数，每次尝试（成功或失败重试）都推进一次
+    next_key_index: Vec<AtomicUsize>,
 }
 
 impl UpstreamSelector {
@@ -60,6 +53,7 @@ impl UpstreamSelector {
         if upstreams.is_empty() {
             return None;
         }
+        let next_key_index = upstreams.iter().map(|_| AtomicUsize::new(0)).collect();
         Some(Self {
             upstreams,
             global_user_agents,
@@ -67,6 +61,7 @@ impl UpstreamSelector {
             next_index_anthropic: AtomicUsize::new(0),
             next_index_openai_responses: AtomicUsize::new(0),
             next_index_openai_chat: AtomicUsize::new(0),
+            next_key_index,
         })
     }
 
@@ -150,23 +145,31 @@ impl UpstreamSelector {
             .count()
     }
 
-    /// 获取下一个匹配指定 mode 的 upstream 和对应的 `api_key`
-    /// 双层轮询策略：
-    /// 1. 外层：按 round-robin 选择 upstream
-    /// 2. 内层：在该 upstream 内部按 round-robin 选择 `api_key`
+    /// 获取指定 upstream 下一次尝试应使用的 `api_key`
     ///
-    /// 例如：2个upstream，每个有3个key
-    /// 请求1: upstream[0], key[0]
-    /// 请求2: upstream[1], key[0]
-    /// 请求3: upstream[0], key[1]
-    /// 请求4: upstream[1], key[1]
-    /// 请求5: upstream[0], key[2]
-    /// 请求6: upstream[1], key[2]
-    /// 请求7: upstream[0], key[0]  (循环)
+    /// 每个 upstream 有独立的轮询计数，每次调用都会推进，
+    /// 因此 key 的轮换只取决于尝试次数：不论请求成功还是失败重试，每次尝试都会换到下一个 key。
+    pub fn next_api_key(&self, upstream_index: usize) -> &str {
+        let Some(upstream) = self.upstreams.get(upstream_index) else {
+            return "";
+        };
+        if upstream.api_keys.is_empty() {
+            return "";
+        }
+
+        let key_index = self.next_key_index[upstream_index].fetch_add(1, Ordering::Relaxed)
+            % upstream.api_keys.len();
+        &upstream.api_keys[key_index]
+    }
+
+    /// 获取下一个匹配指定 mode 的 upstream
+    ///
+    /// upstream 按请求 round-robin 轮询；`api_key` 不在本次选择中决定，
+    /// 而是由 [`Self::next_api_key`] 在每次尝试时轮换。
     ///
     /// 如果提供了 `request_model`，则只在 model 数组包含该值的上游之间轮询
     ///
-    /// 返回 (upstream索引, `name`, `base_url`, models, `api_key`, `user_agent`, `mode`)
+    /// 返回 (upstream索引, `name`, `base_url`, models, `user_agent`, `mode`)
     ///
     pub fn next_by_mode(&self, expected_mode: Mode) -> Option<UpstreamSelection<'_>> {
         self.next_by_mode_and_model(expected_mode, None)
@@ -182,22 +185,14 @@ impl UpstreamSelector {
         if let Some((upstream_idx, upstream)) =
             self.forced_upstream_for_mode_and_model(expected_mode, request_model)
         {
-            let mode_idx = self
-                .mode_counter(expected_mode)
+            self.mode_counter(expected_mode)
                 .fetch_add(1, Ordering::Relaxed);
-            let api_key = if upstream.api_keys.is_empty() {
-                ""
-            } else {
-                let key_idx = mode_idx % upstream.api_keys.len();
-                &upstream.api_keys[key_idx]
-            };
 
             return Some((
                 upstream_idx,
                 &upstream.name,
                 &upstream.base_url,
                 &upstream.model,
-                api_key,
                 self.resolve_user_agent(upstream, expected_mode),
                 expected_mode,
             ));
@@ -229,20 +224,11 @@ impl UpstreamSelector {
                 is_target
             })?;
 
-        let api_key = if upstream.api_keys.is_empty() {
-            ""
-        } else {
-            let key_count = upstream.api_keys.len();
-            let key_idx = (mode_idx / matching_count) % key_count;
-            &upstream.api_keys[key_idx]
-        };
-
         Some((
             upstream_idx,
             &upstream.name,
             &upstream.base_url,
             &upstream.model,
-            api_key,
             self.resolve_user_agent(upstream, expected_mode),
             expected_mode,
         ))
@@ -327,26 +313,65 @@ mod tests {
         let selector =
             UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
 
-        // 验证轮询顺序：upstream[1] key[0] -> upstream[2] key[0] -> upstream[1] key[1] -> upstream[2] key[1]
-        let (idx0, _, _, _, key0, _, mode0) = selector
+        // 验证 upstream 轮询顺序：upstream[1] -> upstream[2] -> upstream[1] -> upstream[2]
+        // api_key 不在选择 upstream 时决定，改由 next_api_key 按尝试轮换
+        let (idx0, _, _, _, _, mode0) = selector
             .next_by_mode(Mode::OpenAIResponses)
             .expect("应能选到第一个匹配 upstream");
-        assert_eq!((idx0, key0, mode0), (1, "key2a", Mode::OpenAIResponses));
+        assert_eq!((idx0, mode0), (1, Mode::OpenAIResponses));
 
-        let (idx1, _, _, _, key1, _, _) = selector
+        let (idx1, _, _, _, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
             .expect("应轮询到下一个 upstream");
-        assert_eq!((idx1, key1), (2, "key3a"));
+        assert_eq!(idx1, 2);
 
-        let (idx2, _, _, _, key2, _, _) = selector
+        let (idx2, _, _, _, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
-            .expect("应回到第一个 upstream 的下一个 key");
-        assert_eq!((idx2, key2), (1, "key2b"));
+            .expect("应回到第一个 upstream");
+        assert_eq!(idx2, 1);
 
-        let (idx3, _, _, _, key3, _, _) = selector
+        let (idx3, _, _, _, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
-            .expect("应轮询第二个 upstream 的下一个 key");
-        assert_eq!((idx3, key3), (2, "key3b"));
+            .expect("应轮询第二个 upstream");
+        assert_eq!(idx3, 2);
+    }
+
+    #[test]
+    fn test_next_api_key_rotates_per_attempt() {
+        let upstreams = vec![
+            UpstreamConfig {
+                enable: true,
+                name: "two-keys".to_string(),
+                base_url: "https://two.example.com".to_string(),
+                model: vec!["model".to_string()],
+                api_keys: vec!["key-a".to_string(), "key-b".to_string()],
+                user_agent_claude: None,
+                user_agent_codex: None,
+                mode: vec![Mode::OpenAIResponses].into(),
+            },
+            UpstreamConfig {
+                enable: true,
+                name: "no-keys".to_string(),
+                base_url: "https://empty.example.com".to_string(),
+                model: vec!["model".to_string()],
+                api_keys: vec![],
+                user_agent_claude: None,
+                user_agent_codex: None,
+                mode: vec![Mode::OpenAIResponses].into(),
+            },
+        ];
+        let selector =
+            UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
+
+        // 每次调用都推进计数，不论请求成功还是失败重试都轮换到下一个 key
+        assert_eq!(selector.next_api_key(0), "key-a");
+        assert_eq!(selector.next_api_key(0), "key-b");
+        assert_eq!(selector.next_api_key(0), "key-a");
+        assert_eq!(selector.next_api_key(0), "key-b");
+
+        // 未配置 key 或下标越界时返回空串
+        assert_eq!(selector.next_api_key(1), "");
+        assert_eq!(selector.next_api_key(9), "");
     }
 
     #[test]
@@ -377,7 +402,7 @@ mod tests {
             UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
 
         // 应跳过禁用项
-        let (idx, _, _, _, _, _, _) = selector
+        let (idx, _, _, _, _, _) = selector
             .next_by_mode(Mode::OpenAIResponses)
             .expect("应跳过禁用 upstream");
         assert_eq!(idx, 1);
@@ -425,31 +450,21 @@ mod tests {
             UpstreamSelector::new(None, upstreams).expect("测试数据已确保 upstreams 非空");
 
         // 验证多协议 upstream 支持 AnthropicDirect
-        let (idx, _, _, _, key, user_agent, mode) = selector
+        let (idx, _, _, _, user_agent, mode) = selector
             .next_by_mode(Mode::AnthropicDirect)
             .expect("多协议 upstream 应支持 anthropic");
         assert_eq!(
-            (idx, key, user_agent, mode),
-            (
-                0,
-                "shared-key-1",
-                Some("Claude-UA/1.0"),
-                Mode::AnthropicDirect
-            )
+            (idx, user_agent, mode),
+            (0, Some("Claude-UA/1.0"), Mode::AnthropicDirect)
         );
 
         // 验证多协议 upstream 也支持 OpenAIResponses
-        let (idx, _, _, _, key, user_agent, mode) = selector
+        let (idx, _, _, _, user_agent, mode) = selector
             .next_by_mode(Mode::OpenAIResponses)
             .expect("多协议 upstream 应支持 openai_responses");
         assert_eq!(
-            (idx, key, user_agent, mode),
-            (
-                0,
-                "shared-key-1",
-                Some("Codex-UA/1.0"),
-                Mode::OpenAIResponses
-            )
+            (idx, user_agent, mode),
+            (0, Some("Codex-UA/1.0"), Mode::OpenAIResponses)
         );
 
         // 验证计数包含多协议 upstream
@@ -491,20 +506,21 @@ mod tests {
         // 强制索引忽略 enable 标志
         assert_eq!(selector.matching_count_by_mode(Mode::AnthropicDirect), 1);
 
-        // 验证只在指定 upstream 的 keys 内轮询
-        let first = selector
+        // 验证强制索引命中，且 key 在重试尝试间轮换
+        let (first, _, _, _, _, _) = selector
             .next_by_mode(Mode::AnthropicDirect)
             .expect("应命中强制索引");
-        let second = selector
+        let (second, _, _, _, _, _) = selector
             .next_by_mode(Mode::AnthropicDirect)
-            .expect("应继续轮询 keys");
-        let third = selector
+            .expect("应继续命中强制索引");
+        let (third, _, _, _, _, _) = selector
             .next_by_mode(Mode::AnthropicDirect)
-            .expect("应回到第一个 key");
+            .expect("应继续命中强制索引");
 
-        assert_eq!((first.0, first.4), (1, "key-2a"));
-        assert_eq!((second.0, second.4), (1, "key-2b"));
-        assert_eq!((third.0, third.4), (1, "key-2a"));
+        assert_eq!((first, second, third), (1, 1, 1));
+        assert_eq!(selector.next_api_key(first), "key-2a");
+        assert_eq!(selector.next_api_key(first), "key-2b");
+        assert_eq!(selector.next_api_key(first), "key-2a");
 
         // 验证强制索引越界返回 None
         let out_of_range = UpstreamSelector::new_with_global_user_agents(
@@ -548,10 +564,10 @@ mod tests {
         .expect("测试数据已确保 upstreams 非空");
 
         // 强制索引仍需遵循 mode 支持，upstream[0] 不支持 AnthropicDirect
-        let (idx, _, _, _, key, _, _) = selector
+        let (idx, _, _, _, _, _) = selector
             .next_by_mode(Mode::AnthropicDirect)
             .expect("应跳过不支持的 upstream[0]");
-        assert_eq!((idx, key), (1, "key-a"));
+        assert_eq!(idx, 1);
 
         // 验证不支持的 mode 返回 None
         let single_mode_selector = UpstreamSelector::new_with_global_user_agents(
@@ -620,10 +636,10 @@ mod tests {
             1
         );
         for _ in 0..4 {
-            let (idx, _, _, _, key, _, _) = selector
+            let (idx, _, _, _, _, _) = selector
                 .next_by_mode_and_model(Mode::OpenAIResponses, Some("model-b"))
                 .expect("应只命中包含 model-b 的 upstream");
-            assert_eq!((idx, key), (1, "key-b"));
+            assert_eq!(idx, 1);
         }
         assert!(
             selector
@@ -728,7 +744,7 @@ mod tests {
             )
             .expect("测试数据已确保 upstreams 非空");
 
-            let (_, _, _, _, _, user_agent, mode) = selector
+            let (_, _, _, _, user_agent, mode) = selector
                 .next_by_mode(case.mode)
                 .expect("应能返回匹配 mode 的 upstream");
 
