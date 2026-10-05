@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use http::{Error as HttpError, HeaderValue};
@@ -113,10 +110,9 @@ pub fn build_proxy_request(
         proxy_req_builder = proxy_req_builder.header(http::header::USER_AGENT, user_agent);
     }
     if bypass_ip_rate_limit {
-        // 文档 IPv6 网段作为计数标识；原子序号让并发请求和重试使用不同的值。
-        static NEXT_FORWARDED_IP: AtomicU64 = AtomicU64::new(1);
-        let sequence = NEXT_FORWARDED_IP.fetch_add(1, Ordering::Relaxed);
-        let address = std::net::Ipv6Addr::from((0x2001_0db8_u128 << 96) | u128::from(sequence));
+        // 保留文档 IPv6 前缀，每次上游尝试独立生成 96 位随机地址后缀。
+        let suffix = rand::random::<u128>() >> 32;
+        let address = std::net::Ipv6Addr::from((0x2001_0db8_u128 << 96) | suffix);
         proxy_req_builder = proxy_req_builder.header("x-forwarded-for", address.to_string());
     }
 
@@ -305,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn ip_rate_limit_bypass_preserves_headers_when_disabled_and_rotates_when_enabled() {
+    fn ip_rate_limit_bypass_preserves_headers_when_disabled_and_replaces_when_enabled() {
         let mut req = make_request("Original-UA/1.0");
         let unchanged = build_proxy_request_for_test(&req, None, false);
         assert!(!unchanged.headers().contains_key("x-forwarded-for"));
@@ -319,8 +315,7 @@ mod tests {
             http::HeaderValue::from_static("192.0.2.3"),
         );
         let original_values: Vec<_> = req.headers().get_all("x-forwarded-for").iter().collect();
-        let mut previous = None;
-        for enabled in [false, true, true, false] {
+        for enabled in [false, true, false] {
             let proxy_req = build_proxy_request_for_test(&req, None, enabled);
             let values: Vec<_> = proxy_req
                 .headers()
@@ -337,8 +332,6 @@ mod tests {
                     panic!("expected a valid forwarded IPv6 address");
                 };
                 assert_eq!(&address.segments()[..2], &[0x2001, 0x0db8]);
-                assert_ne!(previous, Some(address));
-                previous = Some(address);
             } else {
                 assert_eq!(values, original_values);
             }

@@ -17,6 +17,7 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-rustls.workspace = true
 hyper-util.workspace = true
+rand.workspace = true
 salvo.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

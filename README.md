@@ -244,9 +244,9 @@ cargo run -p cli_req_refiner -- /path/to/config.toml
 |:-----|:-----|:-----|
 | `server.user_agent_global_claude` | `String` | 可选，仅对 Claude 接口（`anthropic` 模式）生效的全局 `User-Agent` |
 | `server.user_agent_global_codex` | `String` | 可选，仅对 OpenAI 接口（`openai_responses` 与 `openai_chat` 模式）生效的全局 `User-Agent` |
-| `server.bypass_ip_rate_limit` | `bool` | 默认 `false`，开启后每次上游尝试（含重试）覆盖 `X-Forwarded-For`，使用不同的文档 IPv6 地址；适用于所有转发协议 |
+| `server.bypass_ip_rate_limit` | `bool` | 默认 `false`，开启后每次上游尝试（含重试）覆盖 `X-Forwarded-For`，使用随机的文档 IPv6 地址；适用于所有转发协议 |
 
-`bypass_ip_rate_limit` 支持配置热重载，对后续请求生效。开启后使用 `2001:db8::/32` 中的地址作为 IP 计数标识，不会连接这些地址；关闭时保留原始请求头行为。仅用于自己管理且信任代理请求头的上游：上游若忽略或覆盖此头，该功能无效，也不能绕过用户、令牌、模型或上游账户的限流。它只作用于经过本代理的请求，不影响浏览器直接访问 new-api 的登录请求。
+`bypass_ip_rate_limit` 支持配置热重载，对后续请求生效。开启后使用 `2001:db8::/32` 中的地址作为 IP 计数标识，由 `rand` 每次生成 96 位随机后缀，不会连接这些地址；关闭时保留原始请求头行为。仅用于自己管理且信任代理请求头的上游：上游若忽略或覆盖此头，该功能无效，也不能绕过用户、令牌、模型或上游账户的限流。它只作用于经过本代理的请求，不影响浏览器直接访问 new-api 的登录请求。
 
 ### 🌐 服务监听配置
 
