@@ -20,6 +20,9 @@ pub struct ServerConfig {
     /// 强制轮询的 upstream 下标列表；非空时忽略 `enable` 字段，仅在列表内轮询
     #[serde(default)]
     pub force_upstream_index: Vec<usize>,
+    /// 每次上游尝试更换 X-Forwarded-For，绕过信任此请求头的 IP 限流
+    #[serde(default)]
+    pub bypass_ip_rate_limit: bool,
     /// 是否打印请求体
     #[serde(default)]
     pub log_req_body: bool,
@@ -39,6 +42,7 @@ impl Default for ServerConfig {
         Self {
             port: default_port(),
             force_upstream_index: vec![],
+            bypass_ip_rate_limit: false,
             log_req_body: false,
             log_res_body: false,
             user_agent_global_claude: None,
@@ -109,6 +113,8 @@ struct PartialServerConfig {
     #[serde(default)]
     force_upstream_index: Option<Vec<usize>>,
     #[serde(default)]
+    bypass_ip_rate_limit: Option<bool>,
+    #[serde(default)]
     log_req_body: Option<bool>,
     #[serde(default)]
     log_res_body: Option<bool>,
@@ -128,6 +134,10 @@ impl PartialServerConfig {
                 .force_upstream_index
                 .or(legacy.force_upstream_index)
                 .unwrap_or(defaults.force_upstream_index),
+            bypass_ip_rate_limit: self
+                .bypass_ip_rate_limit
+                .or(legacy.bypass_ip_rate_limit)
+                .unwrap_or(defaults.bypass_ip_rate_limit),
             log_req_body: self
                 .log_req_body
                 .or(legacy.log_req_body)
@@ -209,6 +219,25 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.server.force_upstream_index, vec![0, 2]);
+    }
+
+    #[test]
+    fn ip_rate_limit_bypass_defaults_and_overrides() {
+        assert!(!ServerConfig::default().bypass_ip_rate_limit);
+        for (input, expected) in [
+            ("", false),
+            ("[server]\nbypass_ip_rate_limit = true", true),
+            ("[server]\nbypass_ip_rate_limit = false", false),
+            ("bypass_ip_rate_limit = true", true),
+            (
+                "bypass_ip_rate_limit = true\n[server]\nbypass_ip_rate_limit = false",
+                false,
+            ),
+        ] {
+            let config: Config = toml::from_str(input).unwrap();
+            assert_eq!(config.server.bypass_ip_rate_limit, expected, "{input}");
+        }
+        assert!(toml::from_str::<Config>("[server]\nbypass_ip_rate_limit = 'true'").is_err());
     }
 
     #[test]
@@ -461,6 +490,7 @@ mod tests {
             ServerConfig {
                 port: 19077,
                 force_upstream_index: vec![],
+                bypass_ip_rate_limit: false,
                 log_req_body: true,
                 log_res_body: true,
                 user_agent_global_claude: Some("Claude-Global/9.9.9".to_string()),

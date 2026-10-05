@@ -246,6 +246,7 @@ async fn try_upstreams(plan: ProxyPlan, ctx: RetryContext<'_>) -> RetryLoopResul
             host,
             api_key,
             selected_upstream.user_agent.as_deref(),
+            current_cfg.server.bypass_ip_rate_limit,
             attempt_body,
         ) {
             Ok(request) => request,

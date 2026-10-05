@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use bytes::Bytes;
 use http::{Error as HttpError, HeaderValue};
@@ -82,6 +85,7 @@ pub fn build_proxy_request(
     host: &str,
     api_key: &str,
     upstream_user_agent: Option<&str>,
+    bypass_ip_rate_limit: bool,
     body_bytes: Bytes,
 ) -> Result<HyperRequest<Full<Bytes>>, HttpError> {
     let override_user_agent = resolve_upstream_user_agent(upstream_user_agent, host);
@@ -96,6 +100,7 @@ pub fn build_proxy_request(
         if name_str != "host"
             && name_str != "authorization"
             && name_str != "content-length"
+            && !(bypass_ip_rate_limit && name_str == "x-forwarded-for")
             && !should_skip_original_user_agent
         {
             proxy_req_builder = proxy_req_builder.header(name, value);
@@ -106,6 +111,13 @@ pub fn build_proxy_request(
     proxy_req_builder = proxy_req_builder.header("host", host);
     if let Some(user_agent) = override_user_agent {
         proxy_req_builder = proxy_req_builder.header(http::header::USER_AGENT, user_agent);
+    }
+    if bypass_ip_rate_limit {
+        // 文档 IPv6 网段作为计数标识；原子序号让并发请求和重试使用不同的值。
+        static NEXT_FORWARDED_IP: AtomicU64 = AtomicU64::new(1);
+        let sequence = NEXT_FORWARDED_IP.fetch_add(1, Ordering::Relaxed);
+        let address = std::net::Ipv6Addr::from((0x2001_0db8_u128 << 96) | u128::from(sequence));
+        proxy_req_builder = proxy_req_builder.header("x-forwarded-for", address.to_string());
     }
 
     proxy_req_builder.body(Full::new(body_bytes))
@@ -166,6 +178,7 @@ mod tests {
     fn build_proxy_request_for_test(
         req: &Request,
         upstream_user_agent: Option<&str>,
+        bypass_ip_rate_limit: bool,
     ) -> HyperRequest<Full<Bytes>> {
         let proxy_req_result = build_proxy_request(
             req,
@@ -173,6 +186,7 @@ mod tests {
             "upstream.example.com",
             "secret",
             upstream_user_agent,
+            bypass_ip_rate_limit,
             Bytes::new(),
         );
         let Ok(proxy_req) = proxy_req_result else {
@@ -273,7 +287,7 @@ mod tests {
 
         for case in cases {
             let req = make_request("Original-UA/1.0");
-            let proxy_req = build_proxy_request_for_test(&req, case.upstream_user_agent);
+            let proxy_req = build_proxy_request_for_test(&req, case.upstream_user_agent, false);
 
             assert_eq!(
                 header_value_as_str(&proxy_req, http::header::USER_AGENT),
@@ -286,6 +300,51 @@ mod tests {
                 Some("keep-me"),
                 "{}",
                 case.name
+            );
+        }
+    }
+
+    #[test]
+    fn ip_rate_limit_bypass_preserves_headers_when_disabled_and_rotates_when_enabled() {
+        let mut req = make_request("Original-UA/1.0");
+        let unchanged = build_proxy_request_for_test(&req, None, false);
+        assert!(!unchanged.headers().contains_key("x-forwarded-for"));
+
+        req.headers_mut().append(
+            "x-forwarded-for",
+            http::HeaderValue::from_static("192.0.2.1, 192.0.2.2"),
+        );
+        req.headers_mut().append(
+            "x-forwarded-for",
+            http::HeaderValue::from_static("192.0.2.3"),
+        );
+        let original_values: Vec<_> = req.headers().get_all("x-forwarded-for").iter().collect();
+        let mut previous = None;
+        for enabled in [false, true, true, false] {
+            let proxy_req = build_proxy_request_for_test(&req, None, enabled);
+            let values: Vec<_> = proxy_req
+                .headers()
+                .get_all("x-forwarded-for")
+                .iter()
+                .collect();
+            if enabled {
+                assert_eq!(values.len(), 1);
+                let Ok(address) = values[0]
+                    .to_str()
+                    .unwrap_or_default()
+                    .parse::<std::net::Ipv6Addr>()
+                else {
+                    panic!("expected a valid forwarded IPv6 address");
+                };
+                assert_eq!(&address.segments()[..2], &[0x2001, 0x0db8]);
+                assert_ne!(previous, Some(address));
+                previous = Some(address);
+            } else {
+                assert_eq!(values, original_values);
+            }
+            assert_eq!(
+                named_header_value_as_str(&proxy_req, "x-test-header"),
+                Some("keep-me")
             );
         }
     }

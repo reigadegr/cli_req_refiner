@@ -8,6 +8,9 @@
 port = 9077
 # 强制轮询的 upstream 下标列表；非空时忽略 enable 字段，仅在列表内轮询；空数组按默认规则轮询
 force_upstream_index = []
+# 每次上游尝试覆盖 X-Forwarded-For 为不同的文档 IPv6 地址（含重试）；支持热重载
+# 仅用于自己管理且信任该请求头的上游，不能绕过用户、令牌或模型限流
+bypass_ip_rate_limit = false
 
 # 是否打印请求体
 log_req_body = false
