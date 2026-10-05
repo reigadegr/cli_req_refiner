@@ -108,7 +108,7 @@ async fn run_proxy(
     let cfg = config.get();
     let request_url = req.uri().to_string();
 
-    log_request_meta(req.method().as_str(), &request_url, req.headers());
+    log_request_meta("入站", req.method().as_str(), &request_url, req.headers());
 
     // 提取请求体中的 model 字段，用于过滤 upstream
     let request_model = extract_model_from_body(&body_bytes);
@@ -256,6 +256,16 @@ async fn try_upstreams(plan: ProxyPlan, ctx: RetryContext<'_>) -> RetryLoopResul
                 return RetryLoopResult::Forwarded;
             }
         };
+
+        log_request_meta(
+            &format!(
+                "上游尝试 {attempt}/{max_attempts} (bypass_ip_rate_limit={}) ",
+                current_cfg.server.bypass_ip_rate_limit
+            ),
+            proxy_req.method().as_str(),
+            &proxy_req.uri().to_string(),
+            proxy_req.headers(),
+        );
 
         match ctx.client.request(proxy_req).await {
             Ok(proxy_resp) => {

@@ -143,6 +143,11 @@ fn resolve_upstream_user_agent(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io,
+        sync::{Arc, Mutex},
+    };
+
     use bytes::Bytes;
     use http::uri::Scheme;
     use http_body_util::Full;
@@ -153,9 +158,26 @@ mod tests {
     use super::{build_proxy_request, prepare_request_body};
     use crate::{
         entry::proxy_plan_for_mode,
-        response::should_retry_upstream_status,
+        response::{log_request_meta, should_retry_upstream_status},
         types::{ProxyKind, ProxyPlan},
     };
+
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for LogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|error| io::Error::other(error.to_string()))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn make_request(user_agent: &str) -> Request {
         let req_result = HyperRequest::builder()
@@ -339,6 +361,58 @@ mod tests {
                 named_header_value_as_str(&proxy_req, "x-test-header"),
                 Some("keep-me")
             );
+        }
+    }
+
+    #[test]
+    fn upstream_request_log_contains_final_headers_and_complete_values() {
+        let mut req = make_request("Original-UA/1.0");
+        for (name, value) in [
+            ("authorization", "Bearer original-test-key"),
+            ("x-forwarded-for", "192.0.2.20"),
+            ("cookie", "session=test-cookie"),
+            ("x-api-key", "test-api-key"),
+        ] {
+            req.headers_mut()
+                .insert(name, http::HeaderValue::from_static(value));
+        }
+        let proxy_req = build_proxy_request_for_test(&req, Some("Configured-UA/2.0"), true);
+        let output = LogBuffer::default();
+        let writer = output.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            log_request_meta(
+                "上游尝试 2/300 (bypass_ip_rate_limit=true) ",
+                proxy_req.method().as_str(),
+                &proxy_req.uri().to_string(),
+                proxy_req.headers(),
+            );
+        });
+
+        let Ok(bytes) = output.0.lock() else {
+            panic!("failed to read captured request log");
+        };
+        let Ok(log) = std::str::from_utf8(&bytes) else {
+            panic!("expected UTF-8 request log");
+        };
+        assert!(log.contains("上游尝试 2/300 (bypass_ip_rate_limit=true) 请求头"));
+        assert!(log.contains("Method: POST\nURI: https://upstream.example.com/v1/messages"));
+        assert!(log.contains("host: upstream.example.com"));
+        assert!(log.contains("user-agent: Configured-UA/2.0"));
+        assert!(log.contains("authorization: Bearer secret"));
+        assert!(log.contains("cookie: session=test-cookie"));
+        assert!(log.contains("x-api-key: test-api-key"));
+        let forwarded_ip =
+            named_header_value_as_str(&proxy_req, "x-forwarded-for").unwrap_or_default();
+        assert!(!forwarded_ip.is_empty());
+        assert!(log.contains(&format!("x-forwarded-for: {forwarded_ip}\n")));
+        for original_value in ["Original-UA/1.0", "original-test-key", "192.0.2.20"] {
+            assert!(!log.contains(original_value));
         }
     }
 

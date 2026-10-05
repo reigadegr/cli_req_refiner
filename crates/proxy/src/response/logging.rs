@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 /// 打印请求体
 pub fn log_full_body(body: &str) {
     let len = body.len();
@@ -16,16 +18,17 @@ pub fn log_full_response(body: &str) {
     tracing::info!("=== 响应体结束 ({} 字节 / {:.2} KB) ===", len, kb);
 }
 
-/// 打印全部请求头
-pub fn log_request_meta(method: &str, uri: &str, headers: &http::HeaderMap) {
-    tracing::info!("=== 请求头 ===");
-    tracing::info!("Method: {}", method);
-    tracing::info!("URI: {}", uri);
+/// 按阶段完整打印请求头，单条日志避免并发请求的头信息交错。
+pub fn log_request_meta(stage: &str, method: &str, uri: &str, headers: &http::HeaderMap) {
+    let mut message = format!("=== {stage}请求头 ===\nMethod: {method}\nURI: {uri}\n");
 
     for (name, value) in headers {
         if let Ok(value_str) = value.to_str() {
-            tracing::info!("{}: {}", name, value_str);
+            let _ = writeln!(message, "{name}: {value_str}");
+        } else {
+            let _ = writeln!(message, "{name}: {value:?}");
         }
     }
-    tracing::info!("=== 请求头结束 ===");
+    let _ = write!(message, "=== {stage}请求头结束 ===");
+    tracing::info!("{message}");
 }
